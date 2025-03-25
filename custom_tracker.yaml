@@ -1,0 +1,8 @@
+# Create a custom tracker configuration file named "custom_tracker.yaml" in your project directory
+tracker_type: bytetrack
+track_high_thresh: 0.5  # High confidence threshold
+track_low_thresh: 0.1   # Low confidence threshold (lower than default to maintain tracks longer)
+new_track_thresh: 0.6   # New track threshold
+track_buffer: 60        # Increased track buffer to maintain IDs longer (frames)
+match_thresh: 0.8       # IOU threshold for matching
+fuse_score: True # Whether to fuse confidence scores with the iou distances before matching

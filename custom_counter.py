@@ -28,6 +28,7 @@ class CustomCounter:
         self.counting_region = None
         self.region_color = (255, 0, 255)
         self.region_thickness = 5
+        self.use_line = True  # Default to use line counter
 
         # Image and annotation Information
         self.im0 = None
@@ -56,6 +57,9 @@ class CustomCounter:
         self.track_thickness = 2
         self.draw_tracks = False
         self.track_color = (0, 255, 0)
+        
+        # Debug addition - explicitly store allowed classes
+        self.allowed_classes = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
 
         # Check if environment support imshow
         self.env_check = check_imshow(warn=True)
@@ -77,6 +81,8 @@ class CustomCounter:
         track_color=(0, 255, 0),
         region_thickness=5,
         line_dist_thresh=15,
+        use_line=None,  # Added the use_line parameter
+        allowed_classes=None,  # Added allowed_classes parameter
     ):
 
 
@@ -99,6 +105,8 @@ class CustomCounter:
             track_color (RGB color): color for tracks
             region_thickness (int): Object counting Region thickness
             line_dist_thresh (int): Euclidean Distance threshold for line counter
+            use_line (bool, optional): Force use of line counter instead of region when True
+            allowed_classes (set, optional): Set of class IDs to track and count
         """
         self.tf = line_thickness
         self.view_img = view_img
@@ -108,11 +116,24 @@ class CustomCounter:
         self.draw_tracks = draw_tracks
 
         self.names = classes_names
+        
+        # Update allowed classes if provided
+        if allowed_classes is not None:
+            self.allowed_classes = set(allowed_classes)
+
+        # Update use_line if provided
+        if use_line is not None:
+            self.use_line = use_line
+
+        # Debug print
+        print(f"Allowed classes: {self.allowed_classes}")
+        allowed_class_names = [self.names.get(cls, f"Unknown-{cls}") for cls in self.allowed_classes]
+        print(f"Allowed class names: {allowed_class_names}")
 
         # Region and line selection
-        if len(reg_pts) == 2:
+        if self.use_line or len(reg_pts) == 2:
             print("Line Counter Initiated.")
-            self.reg_pts = reg_pts
+            self.reg_pts = reg_pts[:2] if len(reg_pts) > 2 else reg_pts  # Ensure we only take 2 points if use_line is True
             self.counting_region = LineString(self.reg_pts)
         elif len(reg_pts) == 4:
             print("Region Counter Initiated.")
@@ -131,6 +152,11 @@ class CustomCounter:
         self.region_color = count_reg_color
         self.region_thickness = region_thickness
         self.line_dist_thresh = line_dist_thresh
+        
+        # Debug print
+        print(f"Allowed classes: {self.allowed_classes}")
+        allowed_class_names = [self.names.get(cls, f"Unknown-{cls}") for cls in self.allowed_classes]
+        print(f"Allowed class names: {allowed_class_names}")
 
     def mouse_event_for_region(self, event, x, y, flags, params):
         """
@@ -158,7 +184,10 @@ class CustomCounter:
         elif event == cv2.EVENT_MOUSEMOVE:
             if self.is_drawing and self.selected_point is not None:
                 self.reg_pts[self.selected_point] = (x, y)
-                self.counting_region = Polygon(self.reg_pts)
+                if self.use_line or len(self.reg_pts) == 2:
+                    self.counting_region = LineString(self.reg_pts)
+                else:
+                    self.counting_region = Polygon(self.reg_pts)
 
         elif event == cv2.EVENT_LBUTTONUP:
             self.is_drawing = False
@@ -166,9 +195,22 @@ class CustomCounter:
 
     def extract_and_process_tracks(self, tracks):
         """Extracts and processes tracks for object counting in a video stream."""
-        boxes = tracks[0].boxes.xyxy.cpu()
-        clss = tracks[0].boxes.cls.cpu().tolist()
-        track_ids = tracks[0].boxes.id.int().cpu().tolist()
+                    
+        try:
+            boxes = tracks[0].boxes.xyxy.cpu()
+            clss = tracks[0].boxes.cls.cpu().tolist()
+            
+            # Safety check for track IDs - handle None case
+            if hasattr(tracks[0].boxes, 'id') and tracks[0].boxes.id is not None:
+                track_ids = tracks[0].boxes.id.int().cpu().tolist()
+            else:
+                # If no track IDs, create sequential IDs
+                print("Warning: No tracking IDs found, creating sequential IDs")
+                track_ids = list(range(len(boxes)))
+        except (AttributeError, IndexError) as e:
+            print(f"Error processing tracks: {e}")
+            return  # Exit if we can't process the tracks
+
 
         # Annotator Init and region drawing
         self.annotator = Annotator(self.im0, self.tf, self.names)
@@ -176,11 +218,17 @@ class CustomCounter:
 
         # Extract tracks
         for box, track_id, cls in zip(boxes, track_ids, clss):
+            # Skip classes that are not in the allowed list
+            if int(cls) not in self.allowed_classes:
+                # Debug print for skipped classes
+                print(f"Skipping class {int(cls)} ({self.names.get(int(cls), 'Unknown')})")
+                continue
 
-            class_name = self.names[cls]
+            class_name = self.names[int(cls)]
+            print(f"Processing {class_name} (ID: {track_id})")
 
             self.annotator.box_label(
-                box, label=str(track_id) + ":" + self.names[cls], color=colors(int(cls), True)
+                box, label=str(track_id) + ":" + class_name, color=colors(int(cls), True)
             )  # Draw bounding box
 
             # Draw Tracks
@@ -195,31 +243,93 @@ class CustomCounter:
                     track_line, color=self.track_color, track_thickness=self.track_thickness
                 )
 
-            # Count objects
-            if len(self.reg_pts) == 4:
+            # Count objects based on direction
+            # Use more points for reliable direction detection
+            min_track_points = 5
+
+            # For region-based counting
+            if not self.use_line and len(self.reg_pts) == 4:
+                # Check if object is in the counting region
                 if self.counting_region.contains(Point(track_line[-1])):
                     if track_id not in self.counting_list:
                         self.counting_list.append(track_id)
-                        if box[0] < self.counting_region.centroid.x:
-                            self.out_counts += 1
-                            self.out_classes[class_name] += 1
-
-
+                        
+                        # Determine direction if enough track history exists
+                        if len(track_line) >= min_track_points:
+                            # Calculate overall movement direction
+                            start_x = track_line[-min_track_points][0]
+                            current_x = track_line[-1][0]
+                            
+                            if current_x > start_x:  # Moving right
+                                self.in_counts += 1
+                                self.in_classes[class_name] += 1
+                                print(f"IN: {class_name} (moving right)")
+                            else:  # Moving left
+                                self.out_counts += 1
+                                self.out_classes[class_name] += 1
+                                print(f"OUT: {class_name} (moving left)")
                         else:
-                            self.in_counts += 1
-                            self.in_classes[class_name] += 1
+                            # Fallback if not enough track history
+                            # Use position relative to region center
+                            if box[0] < self.counting_region.centroid.x:
+                                self.out_counts += 1
+                                self.out_classes[class_name] += 1
+                                print(f"OUT: {class_name} (position-based)")
+                            else:
+                                self.in_counts += 1
+                                self.in_classes[class_name] += 1
+                                print(f"IN: {class_name} (position-based)")
 
-            elif len(self.reg_pts) == 2:
+            # For line-based counting
+            elif self.use_line or len(self.reg_pts) == 2:
                 distance = Point(track_line[-1]).distance(self.counting_region)
                 if distance < self.line_dist_thresh:
                     if track_id not in self.counting_list:
                         self.counting_list.append(track_id)
-                        if box[0] < self.counting_region.centroid.x:
-                            self.out_counts += 1
-                            self.out_classes[class_name] += 1
+                        
+                        # Determine direction if enough track history exists
+                        if len(track_line) >= min_track_points:
+                            # Get line orientation
+                            line_dx = self.reg_pts[1][0] - self.reg_pts[0][0]
+                            line_dy = self.reg_pts[1][1] - self.reg_pts[0][1]
+                            
+                            # Determine if line is more horizontal or vertical
+                            is_horizontal = abs(line_dx) > abs(line_dy)
+                            
+                            if is_horizontal:
+                                # For horizontal line, check vertical movement
+                                start_y = track_line[-min_track_points][1]
+                                current_y = track_line[-1][1]
+                                if current_y < start_y:  # Moving upward
+                                    self.in_counts += 1
+                                    self.in_classes[class_name] += 1
+                                    print(f"IN: {class_name} (moving up)")
+                                else:  # Moving downward
+                                    self.out_counts += 1
+                                    self.out_classes[class_name] += 1
+                                    print(f"OUT: {class_name} (moving down)")
+                            else:
+                                # For vertical line, check horizontal movement
+                                start_x = track_line[-min_track_points][0]
+                                current_x = track_line[-1][0]
+                                if current_x > start_x:  # Moving right
+                                    self.in_counts += 1
+                                    self.in_classes[class_name] += 1
+                                    print(f"IN: {class_name} (moving right)")
+                                else:  # Moving left
+                                    self.out_counts += 1
+                                    self.out_classes[class_name] += 1
+                                    print(f"OUT: {class_name} (moving left)")
                         else:
-                            self.in_counts += 1
-                            self.in_classes[class_name] += 1
+                            # Fallback if not enough track history
+                            if box[0] < self.counting_region.centroid.x:
+                                self.out_counts += 1
+                                self.out_classes[class_name] += 1
+                                print(f"OUT: {class_name} (position-based)")
+                            else:
+                                self.in_counts += 1
+                                self.in_classes[class_name] += 1
+                                print(f"IN: {class_name} (position-based)")
 
         self.display_class_counts()
 
@@ -239,7 +349,6 @@ class CustomCounter:
 
         if counts_label is not None:
             cv2.putText(self.im0, counts_label, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, self.count_txt_color, 2)
-
 
     def display_class_counts(self):
         font_scale = 0.5
@@ -286,7 +395,11 @@ class CustomCounter:
         """Display frame."""
         if self.env_check:
             cv2.namedWindow("Object Counter")
-            if len(self.reg_pts) == 4:  # only add mouse event If user drawn region
+            if len(self.reg_pts) == 4 and not self.use_line:  # only add mouse event If user drawn region and not using line
+                cv2.setMouseCallback(
+                    "Object Counter", self.mouse_event_for_region, {"region_points": self.reg_pts}
+                )
+            elif self.use_line or len(self.reg_pts) == 2:  # Also set mouse callback for line counter
                 cv2.setMouseCallback(
                     "Object Counter", self.mouse_event_for_region, {"region_points": self.reg_pts}
                 )
@@ -297,26 +410,72 @@ class CustomCounter:
 
     def start_counting(self, im0, tracks):
         """
-        Main function to start the object counting process.
-
+        Main function to start object counting process.
         Args:
-            im0 (ndarray): Current frame from the video stream.
-            tracks (list): List of tracks obtained from the object tracking process.
+            im0 (ndarray): Current frame.
+            tracks (list): List of tracks.
+        Returns:
+            im0 (ndarray): Annotated frame.
         """
-        self.im0 = im0  # store image
-
-        if tracks[0].boxes.id is None:
-            if self.view_img:
-                self.display_frames()
-                return
-            else:
-                return
-        self.extract_and_process_tracks(tracks)
-
-        if self.view_img:
-            self.display_frames()
+        if not tracks or len(tracks) == 0:
+            return im0
+            
+        self.im0 = im0
+        self.annotator = Annotator(self.im0, line_width=self.tf)
+        
+        # Basic validation of tracks
+        if not hasattr(tracks[0], 'boxes') or tracks[0].boxes is None or len(tracks[0].boxes) == 0:
+            print("Warning: No valid boxes in tracks")
+            # Draw only the counting line/region without processing tracks
+            self.draw_counting_region()
+            return self.im0
+        
+        # Check if tracking is correctly initialized
+        if not hasattr(tracks[0].boxes, 'id') or tracks[0].boxes.id is None:
+            print("Warning: Tracking IDs not available. Running in detection-only mode.")
+            # You might want to run YOLO in track mode again or handle this case
+        
+        # Process the tracks
+        try:
+            self.extract_and_process_tracks(tracks)
+        except Exception as e:
+            print(f"Error in track processing: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Draw the counting region regardless of tracking success
+        self.draw_counting_region()
+        
+        # Display frame with counting information
+        self.display_frames()
+        
         return self.im0
 
+    def draw_counting_region(self):
+        """Draw the counting line or region on the image"""
+        if isinstance(self.counting_region, LineString):
+            # Draw the counting line using cv2
+            line_points = list(self.counting_region.coords)
+            cv2.line(
+                self.im0,
+                (int(line_points[0][0]), int(line_points[0][1])),
+                (int(line_points[1][0]), int(line_points[1][1])),
+                self.region_color,
+                thickness=self.region_thickness,
+            )
+        elif isinstance(self.counting_region, Polygon):
+            # Draw the counting region using cv2
+            import numpy as np
+            region_points = list(self.counting_region.exterior.coords)
+            region_points_array = np.array([[int(p[0]), int(p[1])] for p in region_points], np.int32)
+            region_points_array = region_points_array.reshape((-1, 1, 2))
+            cv2.polylines(
+                self.im0,
+                [region_points_array],
+                isClosed=True,
+                color=self.region_color,
+                thickness=self.region_thickness,
+            )
 
 if __name__ == "__main__":
     CustomCounter()
