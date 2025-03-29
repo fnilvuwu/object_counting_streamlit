@@ -616,6 +616,7 @@ with tab1:
                 with st.spinner("Memuat Model YOLO..."):
                     model = YOLO("yolo11s.pt")  # Change this to your trained model path
 
+                
                 # Define allowed classes
                 allowed_classes = [
                     1,
@@ -654,10 +655,9 @@ with tab1:
                     "use_line": True
                 }
 
-                # Create a temporary directory for output
+                # Create a temporary directory for output - KEEP THIS PART
                 temp_output_dir = tempfile.mkdtemp()
                 out_path = os.path.join(temp_output_dir, "processed_output.mp4")
-
                 # Progress indicators
                 progress_container = st.container()
 
@@ -962,18 +962,52 @@ with tab1:
                             cls_name = get_class_name(model_names, cls)
                             st.write(f"- {cls_name}: {count}")
 
-                # Display the processed video
+                # Display the processed video - FIXED VERSION FOR STREAMLIT CLOUD
                 st.subheader("Video Hasil Proses")
-                st.video(st.session_state.processed_video)
 
-                # Offer download button
-                with open(st.session_state.processed_video, "rb") as file:
-                    st.download_button(
-                        label="Unduh Video Hasil Proses",
-                        data=file,
-                        file_name="processed_video.mp4",
-                        mime="video/mp4",
-                    )
+                # First try to use the bytes if available
+                if hasattr(st.session_state, "processed_video_bytes") and st.session_state.processed_video_bytes:
+                    try:
+                        st.video(st.session_state.processed_video_bytes)
+                    except Exception as e1:
+                        # Fall back to file path if bytes don't work
+                        try:
+                            if os.path.exists(st.session_state.processed_video):
+                                # Try reading file again as a fallback
+                                with open(st.session_state.processed_video, "rb") as video_file:
+                                    video_bytes = video_file.read()
+                                st.video(video_bytes)
+                            else:
+                                st.warning("File video tidak ditemukan. Coba proses ulang video.")
+                        except Exception as e2:
+                            st.error("Tidak dapat menampilkan video. Video tersedia untuk diunduh.")
+                            st.info(f"Error: {str(e1)}, lalu {str(e2)}")
+                else:
+                    st.warning("Video diproses tetapi tidak tersedia untuk pratinjau. Silakan gunakan tombol unduh.")
+
+                # Offer download button - Improved for reliability
+                try:
+                    if hasattr(st.session_state, "processed_video_bytes") and st.session_state.processed_video_bytes:
+                        # Use the already loaded bytes for download
+                        st.download_button(
+                            label="Unduh Video Hasil Proses",
+                            data=st.session_state.processed_video_bytes,
+                            file_name="processed_video.mp4",
+                            mime="video/mp4",
+                        )
+                    elif os.path.exists(st.session_state.processed_video):
+                        # Read the file if bytes aren't available
+                        with open(st.session_state.processed_video, "rb") as file:
+                            st.download_button(
+                                label="Unduh Video Hasil Proses",
+                                data=file,
+                                file_name="processed_video.mp4",
+                                mime="video/mp4",
+                            )
+                    else:
+                        st.warning("File video tidak tersedia untuk diunduh.")
+                except Exception as e:
+                    st.error(f"Gagal menyiapkan tombol unduhan: {str(e)}")
 
     else:
         # Display instruction when no file is uploaded
