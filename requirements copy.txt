@@ -1,8 +1,0 @@
-streamlit
-opencv-python
-numpy
-ultralytics
-pandas
-Pillow
-shapely
-streamlit-image-coordinates
