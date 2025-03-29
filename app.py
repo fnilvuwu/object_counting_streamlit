@@ -10,31 +10,47 @@ import sqlite3
 import datetime
 import pandas as pd
 from PIL import Image, ImageDraw
+import atexit
+import json
 
-# This will store our object tracking memory
-track_memory = {}
-
-# Set page config
-st.set_page_config(layout="wide", page_title="YOLOv8 Object Detection & Counting")
-
-# Initialize session state
+# Initialize session state variables if they don't exist
+if "track_memory" not in st.session_state:
+    st.session_state.track_memory = {}
+if "processing_complete" not in st.session_state:
+    st.session_state.processing_complete = False
+if "processed_video" not in st.session_state:
+    st.session_state.processed_video = None
+if "counter_results" not in st.session_state:
+    st.session_state.counter_results = None
 if "line_start" not in st.session_state:
     st.session_state.line_start = None
+if "line_end" not in st.session_state:
     st.session_state.line_end = None
-    st.session_state.processed_video = None
-    st.session_state.processing_complete = False
-    st.session_state.counter_results = None
-    st.session_state.current_tab = "Video"  # Add a state to track current tab
-    st.session_state.use_line = True  # Add state for line toggle
+if "video_dimensions" not in st.session_state:
+    st.session_state.video_dimensions = None
+if "current_tab" not in st.session_state:
+    st.session_state.current_tab = "Video"
+if "use_line" not in st.session_state:
+    st.session_state.use_line = True
+if "temp_files" not in st.session_state:
+    st.session_state.temp_files = []
+
+# This will store our object tracking memory
+track_memory = st.session_state.track_memory
+
+# Set page config
+st.set_page_config(layout="wide", page_title="Penghitung Objek YOLOv8")
+
+# Define allowed classes (1: bicycle, 2: car, 3: motorcycle, 5: bus, 7: truck)
+allowed_classes = [1, 2, 3, 5, 7]
 
 # Streamlit UI
-st.title("YOLOv8 Object Detection & Counting")
+st.title("Penghitung Objek YOLOv8")
 
-# Create tabs for Video and Image processing
+# Create tabs
 tab1, tab2, tab3 = st.tabs(
-    ["Video Processing", "Image Processing", "Detection History"]
+    ["Pemrosesan Video", "Pemrosesan Gambar", "Riwayat Deteksi"]
 )
-
 
 # Create a function to initialize the SQLite database
 def init_database():
@@ -42,413 +58,371 @@ def init_database():
     conn = sqlite3.connect("detection_history.db")
     c = conn.cursor()
 
-    # Create table for video detections
-    c.execute(
+    # Check if the table already exists
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='detection_sessions'")
+    table_exists = c.fetchone()
+    
+    # Only create the table if it doesn't exist
+    if not table_exists:
+        # Create table for detection sessions with final counts
+        c.execute(
+            """
+        CREATE TABLE IF NOT EXISTS detection_sessions (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT,
+            file_name TEXT,
+            file_type TEXT,
+            total_detections INTEGER,
+            class_counts TEXT,
+            video_dimensions TEXT,
+            settings_info TEXT
+        )
         """
-    CREATE TABLE IF NOT EXISTS video_detections (
-        id INTEGER PRIMARY KEY,
-        timestamp TEXT,
-        video_name TEXT,
-        frame_number INTEGER,
-        track_id INTEGER,
-        class_id INTEGER,
-        class_name TEXT,
-        confidence REAL,
-        x1 INTEGER,
-        y1 INTEGER,
-        x2 INTEGER,
-        y2 INTEGER,
-        counted BOOLEAN,
-        direction TEXT
-    )
-    """
-    )
-
-    # Create table for image detections
-    c.execute(
-        """
-    CREATE TABLE IF NOT EXISTS image_detections (
-        id INTEGER PRIMARY KEY,
-        timestamp TEXT,
-        image_name TEXT,
-        class_id INTEGER,
-        class_name TEXT,
-        confidence REAL,
-        x1 INTEGER,
-        y1 INTEGER,
-        x2 INTEGER,
-        y2 INTEGER
-    )
-    """
-    )
-
-    # Create table for detection sessions
-    c.execute(
-        """
-    CREATE TABLE IF NOT EXISTS detection_sessions (
-        id INTEGER PRIMARY KEY,
-        timestamp TEXT,
-        file_name TEXT,
-        file_type TEXT,
-        total_detections INTEGER,
-        settings TEXT
-    )
-    """
-    )
+        )
+        print("Database table created")
+    else:
+        print("Database table already exists")
 
     conn.commit()
     conn.close()
-
 
 # Initialize database when the app starts
 init_database()
 
+# Function to save detection session to database
+def save_detection_session(file_name, file_type, total_detections, class_counts, video_dimensions=None):
+    """
+    Save detection session details to SQLite database
+    
+    Args:
+        file_name: Name of the processed file
+        file_type: Type of file (video or image)
+        total_detections: Total number of detections
+        class_counts: Dictionary of class counts
+        video_dimensions: Dimensions of the video (width, height)
+    """
+    try:
+        conn = sqlite3.connect("detection_history.db")
+        c = conn.cursor()
+        
+        # Translate file type to Indonesian
+        if file_type.lower() == "video":
+            file_type_id = "video"
+        elif file_type.lower() == "image":
+            file_type_id = "gambar"
+        else:
+            file_type_id = file_type.lower()
+            
+        # Convert class counts to JSON string
+        class_counts_json = json.dumps(class_counts)
+        
+        # Convert video dimensions to string
+        video_dimensions_str = str(video_dimensions) if video_dimensions else None
+        
+        # Create settings info string
+        settings_info = f"File: {file_name}, Type: {file_type_id}, Dimensions: {video_dimensions_str}"
+        
+        # Get current timestamp
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Insert data into database
+        c.execute(
+            """
+            INSERT INTO detection_sessions 
+            (timestamp, file_name, file_type, total_detections, class_counts, video_dimensions, settings_info)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                timestamp,
+                file_name,
+                file_type_id,
+                total_detections,
+                class_counts_json,
+                video_dimensions_str,
+                settings_info,
+            ),
+        )
+        
+        conn.commit()
+        conn.close()
+        print(f"Saved detection session to database: {file_name}, {total_detections} detections")
+    except Exception as e:
+        print(f"Error saving to database: {e}")
 
-# Function to save detection session
-def save_detection_session(file_name, file_type, total_detections, settings):
-    conn = sqlite3.connect("detection_history.db")
-    c = conn.cursor()
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# Function to get video dimensions
+def get_video_dimensions(video_path):
+    cap = cv2.VideoCapture(video_path)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    return (width, height)
 
-    c.execute(
-        """
-    INSERT INTO detection_sessions (timestamp, file_name, file_type, total_detections, settings)
-    VALUES (?, ?, ?, ?, ?)
-    """,
-        (timestamp, file_name, file_type, total_detections, settings),
-    )
+# Function for total counting (non-line based)
+def process_total_counting(im0, tracks, track_memory=None, conf_thresh=0.5):
+    """
+    Process frames for total object counting without using crossing lines.
+    This function prevents duplicate counting by tracking object IDs.
+    
+    Args:
+        im0: The input frame
+        tracks: Detection tracks from YOLO
+        track_memory: Dictionary to keep track of objects that have been counted
+        conf_thresh: Confidence threshold for detections
+        
+    Returns:
+        im0: Processed frame with annotation
+        track_memory: Updated memory dictionary
+    """
+    if track_memory is None:
+        track_memory = {}
+    
+    # Clone the image for drawing
+    annotated_frame = im0.copy()
+    
+    try:
+        if not tracks or len(tracks) == 0 or not hasattr(tracks[0], 'boxes') or tracks[0].boxes is None:
+            return im0, track_memory
+            
+        boxes = tracks[0].boxes
+        if len(boxes) == 0:
+            return im0, track_memory
+            
+        # Process detections
+        for i, box in enumerate(boxes):
+            # Skip if no confidence or class info
+            if not hasattr(box, 'conf') or not hasattr(box, 'cls'):
+                continue
+                
+            # Get detection info
+            conf = float(box.conf[0])
+            cls_id = int(box.cls[0])
+            
+            # Skip if confidence is too low
+            if conf < conf_thresh:
+                continue
+                
+            # Get bounding box coordinates
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            
+            # Get track ID if available
+            track_id = -1
+            if hasattr(box, 'id') and box.id is not None:
+                track_id = int(box.id[0])
+            else:
+                # If no track ID, use box coordinates as a unique identifier
+                track_id = f"box_{cls_id}_{x1}_{y1}_{x2}_{y2}"
+            
+            # Determine color based on whether object has been counted
+            color = (0, 255, 0)  # Green for counted objects
+            if track_id in track_memory:
+                color = (0, 255, 255)  # Yellow for already counted objects
+            
+            # Draw bounding box
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+            
+            # Add the object to memory if not already tracked
+            if track_id not in track_memory:
+                track_memory[track_id] = {
+                    "id": track_id,
+                    "class": cls_id,
+                    "counted": True,
+                    "first_seen": time.time()
+                }
+                
+            # Add label to the frame
+            if hasattr(tracks[0], 'names') and tracks[0].names is not None:
+                cls_name = tracks[0].names[cls_id]
+            else:
+                cls_name = f"Class {cls_id}"
+                
+            label = f"{cls_name} {conf:.2f}"
+            cv2.putText(
+                annotated_frame,
+                label,
+                (x1, y1 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                color,
+                2
+            )
+    except Exception as e:
+        print(f"Error in process_total_counting: {e}")
+    
+    return annotated_frame, track_memory
 
-    session_id = c.lastrowid
-    conn.commit()
-    conn.close()
-    return session_id
+# Function to scale line coordinates based on video dimensions
+def scale_line_coordinates(original_coords, original_dims, new_dims):
+    if not original_coords or not original_dims or not new_dims:
+        return original_coords
+    
+    orig_width, orig_height = original_dims
+    new_width, new_height = new_dims
+    
+    scaled_coords = []
+    for x, y in original_coords:
+        scaled_x = int((x / orig_width) * new_width)
+        scaled_y = int((y / orig_height) * new_height)
+        scaled_coords.append((scaled_x, scaled_y))
+    
+    return scaled_coords
 
-
-# Function to save video detection
-def save_video_detection(
-    video_name,
-    frame_number,
-    track_id,
-    class_id,
-    class_name,
-    confidence,
-    x1,
-    y1,
-    x2,
-    y2,
-    counted,
-    direction,
-):
-    conn = sqlite3.connect("detection_history.db")
-    c = conn.cursor()
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    c.execute(
-        """
-    INSERT INTO video_detections 
-    (timestamp, video_name, frame_number, track_id, class_id, class_name, confidence, 
-     x1, y1, x2, y2, counted, direction)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """,
-        (
-            timestamp,
-            video_name,
-            frame_number,
-            track_id,
-            class_id,
-            class_name,
-            confidence,
-            x1,
-            y1,
-            x2,
-            y2,
-            counted,
-            direction,
-        ),
-    )
-
-    conn.commit()
-    conn.close()
-
-
-# Function to save image detection
-def save_image_detection(image_name, class_id, class_name, confidence, x1, y1, x2, y2):
-    conn = sqlite3.connect("detection_history.db")
-    c = conn.cursor()
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    c.execute(
-        """
-    INSERT INTO image_detections 
-    (timestamp, image_name, class_id, class_name, confidence, x1, y1, x2, y2)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """,
-        (timestamp, image_name, class_id, class_name, confidence, x1, y1, x2, y2),
-    )
-
-    conn.commit()
-    conn.close()
-
-
-# Function to reset sidebar based on active tab
+# Function to update sidebar based on active tab
 def update_sidebar_for_tab(tab_name):
-    # Clear the sidebar first
     st.sidebar.empty()
-
-    # Set sidebar content based on active tab
-    st.sidebar.header(f"{tab_name} Settings")
+    st.sidebar.header(f"Pengaturan {tab_name}")
 
     if tab_name == "Video":
-        # Video processing sidebar
+        # Video upload
         uploaded_file = st.sidebar.file_uploader(
-            "Choose a video...", type=["mp4", "avi", "mov"], key="video_uploader"
+            "Pilih video...", type=["mp4", "avi", "mov"], key="video_uploader"
         )
 
-        # Adjustable confidence and IoU thresholds
-        conf_thresh = st.sidebar.slider(
-            "Confidence Threshold", 0.0, 1.0, 0.2, 0.05, key="video_conf"
-        )
-        iou_thresh = st.sidebar.slider(
-            "IoU Threshold", 0.0, 1.0, 0.3, 0.05, key="video_iou"
-        )
-
-        # Add option to use counting line
+        # Line counter toggle
         use_line = st.sidebar.checkbox(
-            "Use Counting Line", value=st.session_state.use_line, key="use_line_toggle"
+            "Gunakan Garis Penghitung", value=st.session_state.use_line, key="use_line_toggle"
         )
 
-        # Update session state
+        # Update session state for line toggle
         if use_line != st.session_state.use_line:
             st.session_state.use_line = use_line
 
-        return uploaded_file, conf_thresh, iou_thresh, None, use_line
+        # Reset line coordinates when video dimensions change
+        if uploaded_file and st.session_state.video_dimensions:
+            width, height = st.session_state.video_dimensions
+            
+            # Check if we need to reset line coordinates
+            if "previous_video_dims" not in st.session_state:
+                st.session_state.previous_video_dims = (width, height)
+                st.session_state.line_coordinates = [
+                    (int(width * 0.1), int(height * 0.5)),
+                    (int(width * 0.9), int(height * 0.5))
+                ]
+            elif st.session_state.previous_video_dims != (width, height):
+                # Video dimensions have changed, scale the line
+                old_width, old_height = st.session_state.previous_video_dims
+                
+                # Get current line positions as percentages
+                x1_percent = st.session_state.line_coordinates[0][0] / old_width
+                y1_percent = st.session_state.line_coordinates[0][1] / old_height
+                x2_percent = st.session_state.line_coordinates[1][0] / old_width
+                y2_percent = st.session_state.line_coordinates[1][1] / old_height
+                
+                # Apply percentages to new dimensions
+                st.session_state.line_coordinates = [
+                    (int(x1_percent * width), int(y1_percent * height)),
+                    (int(x2_percent * width), int(y2_percent * height))
+                ]
+                
+                # Ensure coordinates are within bounds
+                st.session_state.line_coordinates = [
+                    (min(max(0, x), width), min(max(0, y), height))
+                    for x, y in st.session_state.line_coordinates
+                ]
+                
+                # Update previous dimensions
+                st.session_state.previous_video_dims = (width, height)
+        
+        # Set default line coordinates for first run
+        if "line_coordinates" not in st.session_state:
+            default_width = 1280  # Default width if no video
+            default_height = 720  # Default height if no video
+            st.session_state.line_coordinates = [
+                (int(default_width * 0.1), int(default_height * 0.5)),
+                (int(default_width * 0.9), int(default_height * 0.5))
+            ]
+
+        return uploaded_file, 0.2, 0.3, None, use_line  # Fixed confidence at 0.2, IoU at 0.3
 
     else:  # Image tab
-        # Image processing sidebar
+        # Image upload
         uploaded_image = st.sidebar.file_uploader(
-            "Choose an image...",
+            "Pilih gambar...",
             type=["jpg", "jpeg", "png", "bmp"],
             key="image_uploader",
         )
 
-        # Adjustable confidence and IoU thresholds
-        img_conf_thresh = st.sidebar.slider(
-            "Confidence Threshold", 0.0, 1.0, 0.25, 0.05, key="img_conf"
-        )
-        img_iou_thresh = st.sidebar.slider(
-            "IoU Threshold", 0.0, 1.0, 0.45, 0.05, key="img_iou"
-        )
+        # Visualization options
+        show_labels = st.sidebar.checkbox("Tampilkan Label", value=True)
+        show_conf = st.sidebar.checkbox("Tampilkan Skor Kepercayaan", value=True)
 
-        # Option to show labels and confidence scores
-        show_labels = st.sidebar.checkbox("Show Labels", value=True)
-        show_conf = st.sidebar.checkbox("Show Confidence Scores", value=True)
+        return uploaded_image, 0.25, 0.45, (show_labels, show_conf), None  # Fixed confidence at 0.25, IoU at 0.45
 
-        return (
-            uploaded_image,
-            img_conf_thresh,
-            img_iou_thresh,
-            (show_labels, show_conf),
-            None,
-        )
+# Function to update line coordinates
+def update_line_coordinates():
+    st.session_state.line_coordinates = [
+        (st.session_state.x1, st.session_state.y1),
+        (st.session_state.x2, st.session_state.y2)
+    ]
 
-
-# Add this new function to the app.py file, near your other processing functions
-
-
-def process_total_counting(
-    frame, tracks, class_names, counter, class_counts, track_memory
-):
+# Helper function to safely get class name from model names dictionary
+def get_class_name(model_names, cls_id):
     """
-    Process frame for total object counting without duplicates by using track memory
-
+    Safely get class name from model names dictionary
+    
     Args:
-        frame: The current video frame
-        tracks: Detection tracks from YOLO
-        class_names: Dictionary of class names
-        counter: Counter object to store counts
-        class_counts: Dictionary to track counts by class
-        track_memory: Dictionary to track objects across frames and prevent duplicates
+        model_names: Dictionary mapping class IDs to class names
+        cls_id: Class ID to look up
+        
+    Returns:
+        Class name as string
     """
-    # Create a copy of the frame
-    annotated_frame = frame.copy()
-    frame_height, frame_width = frame.shape[:2]
+    if not isinstance(model_names, dict):
+        return f"Class {cls_id}"
+        
+    # Try to get class name directly
+    cls_name = model_names.get(cls_id, None)
+    if cls_name is not None:
+        return cls_name
+        
+    # If cls_id is a string that might be a number, try converting it
+    if isinstance(cls_id, str) and cls_id.isdigit():
+        cls_name = model_names.get(int(cls_id), None)
+        if cls_name is not None:
+            return cls_name
+            
+    # If cls_id is a number, try as string
+    if isinstance(cls_id, (int, float)):
+        cls_name = model_names.get(str(cls_id), None)
+        if cls_name is not None:
+            return cls_name
+            
+    # Fall back to original class ID
+    return f"Class {cls_id}"
 
-    # Get current frame's track IDs
-    current_tracks = set()
-    new_tracks = set()
+# Function to clean up temporary files
+def cleanup_temp_files(file_paths):
+    """
+    Clean up temporary files
+    
+    Args:
+        file_paths: List of file paths to remove
+    """
+    for file_path in file_paths:
+        try:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"Removed temporary file: {file_path}")
+        except Exception as e:
+            print(f"Error removing temporary file {file_path}: {e}")
 
-    # Ensure counter has total_counts attribute
-    if not hasattr(counter, "total_counts"):
-        counter.total_counts = 0
+# Register cleanup handler for when the app is closed or restarted
+def on_app_close():
+    # Clean up any temporary files
+    if "temp_files" in st.session_state and st.session_state.temp_files:
+        cleanup_temp_files(st.session_state.temp_files)
+        st.session_state.temp_files = []
 
-    # Get all detected objects
-    if not tracks or len(tracks) == 0:
-        return annotated_frame, track_memory
-
-    boxes = tracks[0].boxes
-    if boxes is None or len(boxes) == 0:
-        return annotated_frame, track_memory
-
-    # Track current frame's objects and update memory
-    for box in boxes:
-        # Get box coordinates and convert to integers
-        if hasattr(box, "xyxy"):
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-        else:
-            continue
-
-        # Calculate box center and area
-        center_x = (x1 + x2) // 2
-        center_y = (y1 + y2) // 2
-        box_area = (x2 - x1) * (y2 - y1)
-
-        # Get class ID and convert to integer
-        if hasattr(box, "cls"):
-            cls_id = int(box.cls[0])
-        else:
-            cls_id = 0
-
-        # Skip if class is not in allowed classes
-        if (
-            hasattr(counter, "allowed_classes")
-            and cls_id not in counter.allowed_classes
-        ):
-            continue
-
-        # Get track ID if available
-        if hasattr(box, "id") and box.id is not None:
-            track_id = int(box.id[0])
-            current_tracks.add(track_id)
-
-            # Check if this is a new track or existing track
-            if track_id not in track_memory:
-                # New track found - add to memory
-                track_memory[track_id] = {
-                    "class_id": cls_id,
-                    "first_seen": time.time(),
-                    "last_seen": time.time(),
-                    "positions": [(center_x, center_y)],
-                    "counted": False,
-                    "frames_visible": 1,
-                    "area": box_area,
-                }
-                new_tracks.add(track_id)
-            else:
-                # Existing track - update last seen and positions
-                track_memory[track_id]["last_seen"] = time.time()
-                track_memory[track_id]["positions"].append((center_x, center_y))
-                track_memory[track_id]["frames_visible"] += 1
-                track_memory[track_id]["area"] = box_area  # Update area
-
-                # Keep only the last 30 positions to save memory
-                if len(track_memory[track_id]["positions"]) > 30:
-                    track_memory[track_id]["positions"].pop(0)
-        else:
-            continue
-
-        # Draw bounding box
-        confidence_color = (0, 255, 0)  # Green for counted objects
-        if track_id in track_memory and not track_memory[track_id]["counted"]:
-            # Only count an object when it's been tracked for at least 5 frames
-            # and is not at the edge of the frame (to avoid counting partial objects)
-            edge_margin = 20  # pixels from edge
-            centered_in_frame = edge_margin < center_x < (
-                frame_width - edge_margin
-            ) and edge_margin < center_y < (frame_height - edge_margin)
-
-            if track_memory[track_id]["frames_visible"] >= 5 and centered_in_frame:
-                # Mark as counted
-                track_memory[track_id]["counted"] = True
-
-                # Update class counts
-                if cls_id in class_counts:
-                    class_counts[cls_id] += 1
-                else:
-                    class_counts[cls_id] = 1
-
-                confidence_color = (0, 255, 0)  # Green for counted objects
-            else:
-                confidence_color = (
-                    0,
-                    165,
-                    255,
-                )  # Orange for tracking but not yet counted
-        elif track_id not in track_memory:
-            confidence_color = (0, 0, 255)  # Red for new detections
-
-        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), confidence_color, 2)
-
-        # Get class name
-        if isinstance(class_names, dict):
-            cls_name = class_names.get(cls_id, f"Class {cls_id}")
-        else:
-            cls_name = f"Class {cls_id}"
-
-        # Draw label with track ID
-        if track_id in track_memory and track_memory[track_id]["counted"]:
-            label = f"{cls_name}-{track_id} ✓"  # Checkmark for counted objects
-        else:
-            label = f"{cls_name}-{track_id}"
-
-        cv2.putText(
-            annotated_frame,
-            label,
-            (x1, y1 - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            confidence_color,
-            2,
-        )
-
-    # Clean up tracks that haven't been seen recently (5 seconds timeout)
-    current_time = time.time()
-    tracks_to_remove = []
-
-    for track_id, track_data in track_memory.items():
-        if current_time - track_data["last_seen"] > 5.0:  # 5 second timeout
-            tracks_to_remove.append(track_id)
-
-    for track_id in tracks_to_remove:
-        del track_memory[track_id]
-
-    # Update total count based on counted objects
-    counter.total_counts = sum(class_counts.values())
-
-    # Add count and indicators to the frame
-    cv2.putText(
-        annotated_frame,
-        f"Total Count: {counter.total_counts}",
-        (20, 40),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1,
-        (0, 0, 255),
-        2,
-    )
-
-    # Add tracking stats
-    cv2.putText(
-        annotated_frame,
-        f"Tracking: {len(current_tracks)} objects ({len(new_tracks)} new)",
-        (20, 80),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.6,
-        (255, 0, 0),
-        2,
-    )
-
-    return annotated_frame, track_memory
-
+# Register the cleanup function to run when the app is closed
+atexit.register(on_app_close)
 
 # Video Processing Tab
 with tab1:
     st.session_state.current_tab = "Video"
 
     # Get video sidebar inputs
-    uploaded_file, conf_thresh, iou_thresh, _, use_line = update_sidebar_for_tab(
-        "Video"
-    )
+    uploaded_file, conf_thresh, _, _, use_line = update_sidebar_for_tab("Video")
 
-    st.header("Video Object Counting")
+    st.header("Penghitungan Objek Video")
 
     if uploaded_file:
         # Save uploaded file temporarily
@@ -468,6 +442,7 @@ with tab1:
         if success:
             # Store video dimensions
             frame_height, frame_width = first_frame.shape[:2]
+            st.session_state.video_dimensions = (frame_width, frame_height)
 
             # Convert to RGB for display
             first_frame_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
@@ -489,7 +464,7 @@ with tab1:
                 col1, col2 = st.columns([3, 1])
 
                 with col1:
-                    st.subheader("Set Counting Line")
+                    st.subheader("Set Garis Penghitung")
 
                     # Create a copy of the image with the line drawn on it
                     image_with_line = pil_image.copy()
@@ -535,7 +510,7 @@ with tab1:
                     # Display the image with line
                     st.image(
                         image_with_line,
-                        caption="Counting Line",
+                        caption="Garis Penghitung",
                         use_container_width=True,
                     )
 
@@ -594,10 +569,10 @@ with tab1:
                         st.rerun()
 
                 with col2:
-                    st.subheader("Processing Options")
+                    st.subheader("Pengaturan Proses")
 
                     # Display current line coordinates
-                    st.write("Current Line Coordinates:")
+                    st.write("Koordinat Garis Saat Ini:")
                     st.write(f"Start: {st.session_state.line_start}")
                     st.write(f"End: {st.session_state.line_end}")
 
@@ -609,26 +584,27 @@ with tab1:
 
                     # Process video button
                     process_button = st.button(
-                        "Process Video", type="primary", use_container_width=True
+                        "Proses Video", type="primary", use_container_width=True
                     )
             else:
                 # Simplified UI when line is disabled
                 col1, col2 = st.columns([3, 1])
 
                 with col1:
-                    st.subheader("Preview Frame")
+                    st.subheader("Pratinjau Frame")
+
                     # Show first frame without line
-                    st.image(pil_image, caption="First Frame", use_container_width=True)
+                    st.image(pil_image, caption="Frame Pertama", use_container_width=True)
 
                 with col2:
-                    st.subheader("Processing Options")
+                    st.subheader("Pengaturan Proses")
                     st.info(
-                        "Counting Line is disabled. All objects will be counted without directional distinction."
+                        "Garis Penghitung dinonaktifkan. Semua objek akan dihitung tanpa perbedaan arah."
                     )
 
                     # Process video button
                     process_button = st.button(
-                        "Process Video", type="primary", use_container_width=True
+                        "Proses Video", type="primary", use_container_width=True
                     )
 
                 # Empty line points when line is disabled
@@ -637,7 +613,7 @@ with tab1:
             # In the video processing section where you're processing the button click
             if process_button:
                 # Load YOLO model
-                with st.spinner("Loading YOLO model..."):
+                with st.spinner("Memuat Model YOLO..."):
                     model = YOLO("yolo11s.pt")  # Change this to your trained model path
 
                 # Define allowed classes
@@ -668,6 +644,16 @@ with tab1:
                     allowed_classes=allowed_classes,  # Pass the allowed classes to the counter
                 )
 
+                # Initialize counter results in session state
+                st.session_state.counter_results = {
+                    "in_counts": 0,
+                    "out_counts": 0,
+                    "in_classes": {},
+                    "out_classes": {},
+                    "model_names": model.names,
+                    "use_line": True
+                }
+
                 # Create a temporary directory for output
                 temp_output_dir = tempfile.mkdtemp()
                 out_path = os.path.join(temp_output_dir, "processed_output.mp4")
@@ -678,7 +664,7 @@ with tab1:
                 with progress_container:
                     progress_text = st.empty()
                     progress_bar = st.progress(0)
-                    progress_text.text("Processing video frames...")
+                    progress_text.text("Mengolah frame video...")
 
                 # Use H.264 codec for better compatibility
                 fourcc = (
@@ -694,18 +680,10 @@ with tab1:
                 frame_idx = 0
                 total_detections = 0
                 video_name = os.path.basename(uploaded_file.name)
-
-                # Save detection session
-                settings_info = (
-                    f"conf={conf_thresh}, iou={iou_thresh}, use_line={use_line}"
-                )
-                session_id = save_detection_session(
-                    video_name, "video", 0, settings_info
-                )
-
-                # Reset video capture to start
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
+                
+                # Create a dictionary to track unique objects by ID to prevent duplicate counting
+                unique_object_tracker = {}
+                
                 # Process the video in a single loop
                 while cap.isOpened():
                     success, im0 = cap.read()
@@ -717,7 +695,7 @@ with tab1:
                         im0,
                         persist=True,
                         conf=conf_thresh,
-                        iou=iou_thresh,
+                        iou=0.3,
                         verbose=False,
                         tracker="custom_tracker.yaml",
                         classes=allowed_classes,  # Filter classes during detection
@@ -725,119 +703,71 @@ with tab1:
 
                     # Process frame based on counting method
                     if use_line:
-                        # Use the existing line counting functionality
+                        # Process with line counter
                         im0 = counter.start_counting(im0, tracks)
-
-                        # Save detections to database
-                        if tracks and len(tracks) > 0 and hasattr(tracks[0], "boxes"):
-                            boxes = tracks[0].boxes
-                            if boxes is not None and len(boxes) > 0:
-                                for i, box in enumerate(boxes):
-                                    if (
-                                        hasattr(box, "cls")
-                                        and hasattr(box, "conf")
-                                        and hasattr(box, "xyxy")
-                                        and hasattr(box, "id")
-                                    ):
-                                        cls_id = int(box.cls[0])
-
-                                        # Skip classes not in allowed list
-                                        if cls_id not in allowed_classes:
-                                            continue
-
-                                        conf = float(box.conf[0])
-                                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                                        track_id = (
-                                            int(box.id[0]) if box.id is not None else -1
-                                        )
-                                        cls_name = model.names[cls_id]
-
-                                        # Determine if this object was counted by checking counter's counting_list
-                                        counted = track_id in counter.counting_list
-
-                                        # Determine direction
-                                        direction = "none"
-                                        if counted:
-                                            # Check if this track_id is in in_classes or out_classes
-                                            if track_id in counter.in_classes:
-                                                direction = "in"
-                                            elif track_id in counter.out_classes:
-                                                direction = "out"
-
-                                        # Save detection to database
-                                        save_video_detection(
-                                            video_name,
-                                            frame_idx,
-                                            track_id,
-                                            cls_id,
-                                            cls_name,
-                                            conf,
-                                            x1,
-                                            y1,
-                                            x2,
-                                            y2,
-                                            counted,
-                                            direction,
-                                        )
-                                        total_detections += 1
+                        
+                        # Update session state with current counter results after each frame
+                        # Create a mapping from class names to class IDs for reverse lookup
+                        class_name_to_id = {}
+                        for cls_id, name in model.names.items():
+                            class_name_to_id[name] = cls_id
+                            
+                        # Convert string class names to numeric IDs for consistent storage
+                        in_classes_by_id = {}
+                        out_classes_by_id = {}
+                        
+                        for cls_name, count in dict(counter.in_classes).items():
+                            cls_id = class_name_to_id.get(cls_name, cls_name)
+                            in_classes_by_id[cls_id] = count
+                            
+                        for cls_name, count in dict(counter.out_classes).items():
+                            cls_id = class_name_to_id.get(cls_name, cls_name)
+                            out_classes_by_id[cls_id] = count
+                            
+                        st.session_state.counter_results = {
+                            "in_counts": counter.in_counts,
+                            "out_counts": counter.out_counts,
+                            "in_classes": in_classes_by_id,
+                            "out_classes": out_classes_by_id,
+                            "model_names": model.names,
+                            "use_line": True,
+                        }
+                        
+                        # Debug print counter results
+                        if frame_idx % 30 == 0:  # Only print every 30 frames to avoid console spam
+                            print(f"Frame {frame_idx} - Counter results: in={counter.in_counts}, out={counter.out_counts}")
+                            print(f"In classes: {dict(counter.in_classes)}")
+                            print(f"Out classes: {dict(counter.out_classes)}")
                     else:
-                        # Use the improved counting function that prevents duplicates
+                        # Process with total counter
                         im0, track_memory = process_total_counting(
                             im0,
                             tracks,
-                            model.names,
-                            counter,
-                            class_counts,
-                            track_memory,
+                            track_memory if "track_memory" in locals() else {},
+                            conf_thresh,
                         )
 
-                        # Save detections to database
+                        # Only count unique objects based on their track ID
                         if tracks and len(tracks) > 0 and hasattr(tracks[0], "boxes"):
                             boxes = tracks[0].boxes
-                            if boxes is not None and len(boxes) > 0:
+                            if boxes is not None and len(boxes) > 0 and hasattr(boxes, "id"):
                                 for i, box in enumerate(boxes):
-                                    if (
-                                        hasattr(box, "cls")
-                                        and hasattr(box, "conf")
-                                        and hasattr(box, "xyxy")
-                                        and hasattr(box, "id")
-                                    ):
-                                        cls_id = int(box.cls[0])
-
-                                        # Skip classes not in allowed list
-                                        if cls_id not in allowed_classes:
-                                            continue
-
-                                        conf = float(box.conf[0])
-                                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                                        track_id = (
-                                            int(box.id[0]) if box.id is not None else -1
-                                        )
-                                        cls_name = model.names[cls_id]
-
-                                        # Check if this track is counted in track_memory
-                                        counted = False
-                                        if (
-                                            track_id in track_memory
-                                            and track_memory[track_id]["counted"]
-                                        ):
-                                            counted = True
-
-                                        # Save detection to database
-                                        save_video_detection(
-                                            video_name,
-                                            frame_idx,
-                                            track_id,
-                                            cls_id,
-                                            cls_name,
-                                            conf,
-                                            x1,
-                                            y1,
-                                            x2,
-                                            y2,
-                                            counted,
-                                            "total",
-                                        )
+                                    if not hasattr(box, "id") or box.id is None:
+                                        continue
+                                        
+                                    track_id = int(box.id[0])
+                                    cls = int(box.cls[0])
+                                    class_name = get_class_name(model.names, cls)
+                                    
+                                    # Only count this object if we haven't seen this ID before
+                                    if track_id not in unique_object_tracker:
+                                        unique_object_tracker[track_id] = {
+                                            "class": cls,
+                                            "class_name": class_name,
+                                            "first_seen": frame_idx
+                                        }
+                                        # Update the final counts that will be saved to DB
+                                        class_counts[class_name] = class_counts.get(class_name, 0) + 1
                                         total_detections += 1
 
                     # Write processed frame to output video
@@ -851,19 +781,101 @@ with tab1:
                 cap.release()
                 out.release()
 
-                # Update session with final detection count
-                conn = sqlite3.connect("detection_history.db")
-                c = conn.cursor()
-                c.execute(
-                    "UPDATE detection_sessions SET total_detections = ? WHERE id = ?",
-                    (total_detections, session_id),
-                )
-                conn.commit()
-                conn.close()
+                # Add video path to temp files for later cleanup
+                if "temp_files" not in st.session_state:
+                    st.session_state.temp_files = []
+                st.session_state.temp_files.append(video_path)
+
+                # Prepare final counts for database
+                if use_line and hasattr(st.session_state, 'counter_results') and st.session_state.counter_results is not None:
+                    # For line-based counting, use the counter results
+                    in_classes = st.session_state.counter_results.get("in_classes", {}) or {}
+                    out_classes = st.session_state.counter_results.get("out_classes", {}) or {}
+                    
+                    # Calculate total detections (sum of in and out counts)
+                    total_detections = st.session_state.counter_results.get("in_counts", 0) + st.session_state.counter_results.get("out_counts", 0)
+                    
+                    # Debug print
+                    print(f"Final counter results: in={st.session_state.counter_results.get('in_counts', 0)}, out={st.session_state.counter_results.get('out_counts', 0)}")
+                    print(f"In classes: {in_classes}")
+                    print(f"Out classes: {out_classes}")
+                    print(f"Total detections: {total_detections}")
+                    
+                    # Convert class IDs to class names in the in/out classes
+                    named_in_classes = {}
+                    named_out_classes = {}
+                    model_names = st.session_state.counter_results.get("model_names", {})
+                    
+                    for cls, count in in_classes.items():
+                        # Get class name and ensure consistent format
+                        if isinstance(cls, str) and cls.startswith("Class "):
+                            cls_name = cls[6:]  # Remove "Class " prefix
+                        else:
+                            cls_name = get_class_name(model_names, cls)
+                            if cls_name.startswith("Class "):
+                                cls_name = cls_name[6:]  # Remove "Class " prefix
+                        
+                        named_in_classes[cls_name] = count
+                        
+                    for cls, count in out_classes.items():
+                        # Get class name and ensure consistent format
+                        if isinstance(cls, str) and cls.startswith("Class "):
+                            cls_name = cls[6:]  # Remove "Class " prefix
+                        else:
+                            cls_name = get_class_name(model_names, cls)
+                            if cls_name.startswith("Class "):
+                                cls_name = cls_name[6:]  # Remove "Class " prefix
+                        
+                        named_out_classes[cls_name] = count
+                    
+                    # Structure the class counts as requested by the user
+                    structured_class_counts = {
+                        "in": named_in_classes,
+                        "out": named_out_classes
+                    }
+                    
+                    # Save to database only if we have detections
+                    if total_detections > 0:
+                        save_detection_session(
+                            file_name=uploaded_file.name,
+                            file_type="video",
+                            total_detections=total_detections,
+                            class_counts=structured_class_counts,
+                            video_dimensions=st.session_state.video_dimensions
+                        )
+                    else:
+                        print("Warning: No detections to save to database")
+                else:
+                    # For non-line based counting, use the unique object tracker
+                    total_detections = sum(class_counts.values())
+                    
+                    # Convert class IDs to class names
+                    named_class_counts = {}
+                    for cls, count in class_counts.items():
+                        # Remove the "Class " prefix if it exists
+                        if isinstance(cls, str) and cls.startswith("Class "):
+                            cls_name = cls
+                        else:
+                            cls_name = get_class_name(model.names, cls)
+                            # Ensure consistent format by removing "Class " prefix
+                            if cls_name.startswith("Class "):
+                                cls_name = cls_name[6:]
+                        
+                        named_class_counts[cls_name] = count
+                    
+                    # Save to database
+                    save_detection_session(
+                        file_name=uploaded_file.name,
+                        file_type="video",
+                        total_detections=total_detections,
+                        class_counts=named_class_counts,
+                        video_dimensions=st.session_state.video_dimensions
+                    )
+
                 # Clear progress indicators
                 progress_text.empty()
                 progress_bar.empty()
-                progress_container.success("Processing completed!")
+                progress_container.success("Proses selesai!")
 
                 # Store results in session state
                 st.session_state.processed_video = out_path
@@ -900,121 +912,64 @@ with tab1:
                 st.session_state.processing_complete
                 and st.session_state.processed_video
             ):
-                st.header("Processing Results")
+                st.header("Hasil Proses")
 
                 # Check if line was used for this result
                 if st.session_state.counter_results.get("use_line", True):
                     # Display directional counting metrics
-                    st.subheader("Directional Counting Results")
+                    st.subheader("Hasil Penghitungan Arah")
                     col_in, col_out = st.columns(2)
                     col_in.metric(
-                        "Objects In", st.session_state.counter_results["in_counts"]
+                        "Objek Masuk", st.session_state.counter_results["in_counts"]
                     )
                     col_out.metric(
-                        "Objects Out", st.session_state.counter_results["out_counts"]
+                        "Objek Keluar", st.session_state.counter_results["out_counts"]
                     )
 
                     # Display class details in an expandable section
-                    with st.expander("Detailed Class Counts", expanded=True):
+                    with st.expander("Detail Kelas", expanded=True):
                         col_in_detail, col_out_detail = st.columns(2)
 
                         with col_in_detail:
-                            st.write("**In Classes:**")
+                            st.write("**Kelas Masuk:**")
                             for cls, count in st.session_state.counter_results[
                                 "in_classes"
                             ].items():
-                                # Fixed: No conversion attempt, using cls directly as the key or displaying it as is
-                                if isinstance(
-                                    st.session_state.counter_results["model_names"],
-                                    dict,
-                                ):
-                                    # If model_names is a dictionary, try to get the class name
-                                    # Handle both integer and string keys
-                                    try:
-                                        # Try with the original key
-                                        cls_name = st.session_state.counter_results[
-                                            "model_names"
-                                        ].get(cls, cls)
-                                        # If not found and cls is a string that might represent a number
-                                        if (
-                                            cls_name == cls
-                                            and isinstance(cls, str)
-                                            and cls.isdigit()
-                                        ):
-                                            cls_name = st.session_state.counter_results[
-                                                "model_names"
-                                            ].get(int(cls), cls)
-                                    except (ValueError, TypeError):
-                                        cls_name = cls
-                                else:
-                                    # If model_names is not a dictionary, just use the class key as is
-                                    cls_name = cls
+                                cls_name = get_class_name(st.session_state.counter_results["model_names"], cls)
                                 st.write(f"- {cls_name}: {count}")
 
                         with col_out_detail:
-                            st.write("**Out Classes:**")
+                            st.write("**Kelas Keluar:**")
                             for cls, count in st.session_state.counter_results[
                                 "out_classes"
                             ].items():
-                                # Fixed: Same approach as above
-                                if isinstance(
-                                    st.session_state.counter_results["model_names"],
-                                    dict,
-                                ):
-                                    try:
-                                        cls_name = st.session_state.counter_results[
-                                            "model_names"
-                                        ].get(cls, cls)
-                                        if (
-                                            cls_name == cls
-                                            and isinstance(cls, str)
-                                            and cls.isdigit()
-                                        ):
-                                            cls_name = st.session_state.counter_results[
-                                                "model_names"
-                                            ].get(int(cls), cls)
-                                    except (ValueError, TypeError):
-                                        cls_name = cls
-                                else:
-                                    cls_name = cls
+                                cls_name = get_class_name(st.session_state.counter_results["model_names"], cls)
                                 st.write(f"- {cls_name}: {count}")
                 else:
                     # Display total counting metrics
-                    st.subheader("Total Object Counts")
+                    st.subheader("Jumlah Objek Total")
                     st.metric(
-                        "Total Objects Detected",
+                        "Jumlah Objek Terdeteksi",
                         st.session_state.counter_results["total_counts"],
                     )
 
                     # Display class details
-                    with st.expander("Detailed Class Counts", expanded=True):
+                    with st.expander("Detail Kelas", expanded=True):
                         class_counts = st.session_state.counter_results["class_counts"]
                         model_names = st.session_state.counter_results["model_names"]
 
                         for cls, count in class_counts.items():
-                            if isinstance(model_names, dict):
-                                try:
-                                    cls_name = model_names.get(cls, cls)
-                                    if (
-                                        cls_name == cls
-                                        and isinstance(cls, str)
-                                        and cls.isdigit()
-                                    ):
-                                        cls_name = model_names.get(int(cls), cls)
-                                except (ValueError, TypeError):
-                                    cls_name = cls
-                            else:
-                                cls_name = cls
+                            cls_name = get_class_name(model_names, cls)
                             st.write(f"- {cls_name}: {count}")
 
                 # Display the processed video
-                st.subheader("Processed Video")
+                st.subheader("Video Hasil Proses")
                 st.video(st.session_state.processed_video)
 
                 # Offer download button
                 with open(st.session_state.processed_video, "rb") as file:
                     st.download_button(
-                        label="Download Processed Video",
+                        label="Unduh Video Hasil Proses",
                         data=file,
                         file_name="processed_video.mp4",
                         mime="video/mp4",
@@ -1022,17 +977,17 @@ with tab1:
 
     else:
         # Display instruction when no file is uploaded
-        st.info("Please upload a video file to begin.")
+        st.info("Silakan unggah file video untuk memulai.")
         st.markdown(
             """
-        ### How to use this app:
-        1. Upload a video file using the sidebar
-        2. Choose whether to use a counting line:
-           - With line: Count objects crossing the line in both directions
-           - Without line: Count all objects in the video
-        3. If using a line, adjust the counting line position
-        4. Click 'Process Video' to start object counting
-        5. View results and download the processed video
+        ### Cara menggunakan aplikasi ini:
+        1. Unggah file video menggunakan sidebar
+        2. Pilih apakah ingin menggunakan garis penghitung:
+           - Dengan garis: Hitung objek yang melewati garis dalam kedua arah
+           - Tanpa garis: Hitung semua objek dalam video
+        3. Jika menggunakan garis, atur posisi garis penghitung
+        4. Klik 'Proses Video' untuk memulai penghitungan objek
+        5. Lihat hasil dan unduh video hasil proses
         """
         )
 
@@ -1041,14 +996,12 @@ with tab2:
     st.session_state.current_tab = "Image"
 
     # Get image sidebar inputs
-    uploaded_image, img_conf_thresh, img_iou_thresh, vis_options, _ = (
-        update_sidebar_for_tab("Image")
-    )
+    uploaded_image, img_conf_thresh, _, vis_options, _ = update_sidebar_for_tab("Image")
 
     if vis_options:
         show_labels, show_conf = vis_options
 
-    st.header("Image Object Detection")
+    st.header("Deteksi Objek Gambar")
 
     if uploaded_image:
         # Save uploaded image temporarily
@@ -1059,24 +1012,24 @@ with tab2:
 
         # Display original image
         img = Image.open(image_path)
-        st.subheader("Original Image")
-        st.image(img, caption="Uploaded Image", use_container_width=True)
+        st.subheader("Gambar Asli")
+        st.image(img, caption="Gambar Unggahan", use_container_width=True)
 
         # Process image button
         process_image_button = st.button(
-            "Detect Objects", type="primary", use_container_width=True, key="detect_btn"
+            "Deteksi Objek", type="primary", use_container_width=True, key="detect_btn"
         )
 
         if process_image_button:
             # Load YOLO model
-            with st.spinner("Loading YOLO model and processing image..."):
+            with st.spinner("Memuat Model YOLO dan mengolah gambar..."):
                 model = YOLO("yolo11s.pt")  # Change this to your trained model path
 
                 # Run detection
                 results = model(
                     image_path,
                     conf=img_conf_thresh,
-                    iou=img_iou_thresh,
+                    iou=0.45,
                     verbose=False,
                     classes=[1, 2, 3, 5, 7],
                 )
@@ -1085,27 +1038,71 @@ with tab2:
                 img_cv = cv2.imread(image_path)
                 img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
 
-                # Process and visualize results
-                processed_image = img_cv.copy()
-
-                # Get detection results
-                boxes = results[0].boxes
-                class_counts = {}
+                # Initialize detection counts
                 total_detections = 0
-                image_name = os.path.basename(uploaded_image.name)
-
-                # Save detection session
-                settings_info = f"conf={img_conf_thresh}, iou={img_iou_thresh}"
-                session_id = save_detection_session(
-                    image_name, "image", 0, settings_info
-                )
+                class_counts = {}
+                
+                # Track unique objects by ID to prevent duplicate counting
+                unique_objects = set()
+                
+                # Process and count objects by class
+                if len(results) > 0 and hasattr(results[0], 'boxes') and results[0].boxes is not None:
+                    boxes = results[0].boxes
+                    
+                    # Count objects by class (only counting unique objects)
+                    for box in boxes:
+                        cls = int(box.cls[0])
+                        class_name = get_class_name(model.names, cls)
+                        
+                        # For images, we don't have tracking IDs, so use box coordinates as a unique identifier
+                        # This is a simplified approach since we're processing a single image
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        box_id = f"{cls}_{x1}_{y1}_{x2}_{y2}"
+                        
+                        if box_id not in unique_objects:
+                            unique_objects.add(box_id)
+                            class_counts[class_name] = class_counts.get(class_name, 0) + 1
+                            total_detections += 1
+                
+                # Save detection results to database
+                if total_detections > 0:
+                    # Convert class IDs to class names for database
+                    named_class_counts = {}
+                    for cls, count in class_counts.items():
+                        # Ensure consistent format by removing "Class " prefix
+                        if isinstance(cls, str) and cls.startswith("Class "):
+                            cls_name = cls[6:]
+                        else:
+                            cls_name = get_class_name(model.names, cls)
+                            if cls_name.startswith("Class "):
+                                cls_name = cls_name[6:]
+                        
+                        named_class_counts[cls_name] = count
+                    
+                    # Get image dimensions
+                    img_height, img_width = img_cv.shape[:2]
+                    
+                    # Save to database
+                    save_detection_session(
+                        file_name=uploaded_image.name,
+                        file_type="image",
+                        total_detections=total_detections,
+                        class_counts=named_class_counts,
+                        video_dimensions=(img_width, img_height)
+                    )
 
                 # Create a temporary directory for output
                 temp_output_dir = tempfile.mkdtemp()
                 result_path = os.path.join(temp_output_dir, "detected_image.jpg")
 
+                # Track temporary files for cleanup
+                if "temp_files" not in st.session_state:
+                    st.session_state.temp_files = []
+                st.session_state.temp_files.append(image_path)
+                st.session_state.temp_files.append(temp_output_dir)
+
                 # Draw bounding boxes on the image
-                for box in boxes:
+                for box in results[0].boxes:
                     # Get box coordinates
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
 
@@ -1114,23 +1111,11 @@ with tab2:
                     conf = float(box.conf[0])
 
                     # Get class name
-                    cls_name = model.names[cls_id]
-
-                    # Count detections by class
-                    if cls_name in class_counts:
-                        class_counts[cls_name] += 1
-                    else:
-                        class_counts[cls_name] = 1
-
-                    # Save detection to database
-                    save_image_detection(
-                        image_name, cls_id, cls_name, conf, x1, y1, x2, y2
-                    )
-                    total_detections += 1
+                    cls_name = get_class_name(model.names, cls_id)
 
                     # Draw bounding box
                     color = (255, 0, 0)  # Red for all boxes
-                    cv2.rectangle(processed_image, (x1, y1), (x2, y2), color, 2)
+                    cv2.rectangle(img_cv, (x1, y1), (x2, y2), color, 2)
 
                     # Add label if enabled
                     if show_labels:
@@ -1145,7 +1130,7 @@ with tab2:
 
                         # Fill background for text
                         cv2.rectangle(
-                            processed_image,
+                            img_cv,
                             (x1, y1 - text_size[1] - 5),
                             (x1 + text_size[0], y1),
                             color,
@@ -1154,7 +1139,7 @@ with tab2:
 
                         # Add text
                         cv2.putText(
-                            processed_image,
+                            img_cv,
                             label,
                             (x1, y1 - 5),
                             cv2.FONT_HERSHEY_SIMPLEX,
@@ -1163,26 +1148,16 @@ with tab2:
                             2,
                         )
 
-                # Update session with final detection count
-                conn = sqlite3.connect("detection_history.db")
-                c = conn.cursor()
-                c.execute(
-                    "UPDATE detection_sessions SET total_detections = ? WHERE id = ?",
-                    (total_detections, session_id),
-                )
-                conn.commit()
-                conn.close()
-
                 # Save the processed image
                 cv2.imwrite(
-                    result_path, cv2.cvtColor(processed_image, cv2.COLOR_RGB2BGR)
+                    result_path, cv2.cvtColor(img_cv, cv2.COLOR_RGB2BGR)
                 )
 
                 # Display results
-                st.subheader("Detection Results")
+                st.subheader("Hasil Deteksi")
 
                 # Show object counts
-                st.write("**Detected Objects:**")
+                st.write("**Objek Terdeteksi:**")
 
                 # Create a nice grid of metrics
                 if class_counts:
@@ -1191,20 +1166,20 @@ with tab2:
                         cols[i % len(cols)].metric(f"{cls_name}", f"{count}")
                 else:
                     st.warning(
-                        "No objects detected. Try adjusting the confidence threshold."
+                        "Tidak ada objek terdeteksi. Coba atur ambang kepercayaan."
                     )
 
                 # Show the processed image
                 st.image(
-                    processed_image,
-                    caption="Detection Results",
+                    img_cv,
+                    caption="Hasil Deteksi",
                     use_container_width=True,
                 )
 
                 # Offer download button
                 with open(result_path, "rb") as file:
                     st.download_button(
-                        label="Download Processed Image",
+                        label="Unduh Gambar Hasil Deteksi",
                         data=file,
                         file_name="detected_image.jpg",
                         mime="image/jpeg",
@@ -1212,151 +1187,140 @@ with tab2:
                     )
     else:
         # Display instruction when no file is uploaded
-        st.info("Please upload an image file to begin detection.")
+        st.info("Silakan unggah file gambar untuk memulai deteksi.")
         st.markdown(
             """
-        ### How to use image detection:
-        1. Upload an image file using the sidebar
-        2. Adjust the confidence and IoU thresholds to control detection sensitivity
-        3. Configure visualization options (labels, confidence scores)
-        4. Click 'Detect Objects' to start detection
-        5. View results and download the processed image
+        ### Cara menggunakan deteksi gambar:
+        1. Unggah file gambar menggunakan sidebar
+        2. Atur ambang kepercayaan dan IoU untuk mengontrol sensitivitas deteksi
+        3. Konfigurasikan opsi visualisasi (label, skor kepercayaan)
+        4. Klik 'Deteksi Objek' untuk memulai deteksi
+        5. Lihat hasil dan unduh gambar hasil deteksi
         """
         )
 
-# In the History Tab section, update the clear history buttons to trigger page rerun
+# History tab
 with tab3:
     st.session_state.current_tab = "History"
+    st.header("Riwayat Penghitungan")
 
-    st.header("Detection History")
+    # Add filters
+    st.subheader("Filter")
+    filter_col1, filter_col2, filter_col3 = st.columns(3)
 
-    # Add a button to display all history at the top of the history tab
-    if st.button("Refresh History Data", type="primary", key="refresh_history"):
+    with filter_col1:
+        file_type_filter = st.radio("Jenis File", ["Video", "Gambar", "Semua"])
+
+    with filter_col2:
+        limit = st.slider("Jumlah Catatan", 10, 5000, 100, 10)
+
+    with filter_col3:
+        st.write("&nbsp;")  # Add some spacing
+        st.write("&nbsp;")  # Add some spacing
+        show_all = st.checkbox("Tampilkan Semua Data", value=False)
+
+    # Add a button to refresh history
+    if st.button("Refresh Riwayat Data", type="primary", key="refresh_history"):
         st.rerun()
 
-    # Create subtabs for different history views
-    history_tab1, history_tab2 = st.tabs(["Session History", "Detection Details"])
-
-    with history_tab1:
-        st.subheader("Processing Sessions")
-
-        # Fetch session data from database
+    # Add a button to clear history
+    if st.button("Hapus Semua Riwayat", type="secondary", key="clear_history"):
         conn = sqlite3.connect("detection_history.db")
-        sessions_df = pd.read_sql_query(
-            "SELECT * FROM detection_sessions ORDER BY timestamp DESC", conn
-        )
+        c = conn.cursor()
+        c.execute("DELETE FROM detection_sessions")
+        conn.commit()
         conn.close()
+        st.success("Semua riwayat telah dihapus!")
+        st.rerun()
 
-        if not sessions_df.empty:
-            st.dataframe(sessions_df, use_container_width=True)
+    # Build query based on filters
+    base_query = "SELECT * FROM detection_sessions"
+    where_clause = []
+    
+    if file_type_filter != "Semua":
+        # Map UI selection to database value
+        if file_type_filter == "Video":
+            where_clause.append("file_type = 'video'")
+        elif file_type_filter == "Gambar":
+            where_clause.append("file_type = 'gambar'")
+    
+    query = base_query
+    if where_clause:
+        query += " WHERE " + " AND ".join(where_clause)
+    
+    query += " ORDER BY timestamp DESC"
+    if not show_all:
+        query += f" LIMIT {limit}"
 
-            # Allow downloading the session history as CSV
-            csv = sessions_df.to_csv(index=False)
-            st.download_button(
-                label="Download Session History",
-                data=csv,
-                file_name="detection_sessions.csv",
-                mime="text/csv",
-            )
-        else:
-            st.info("No detection sessions found. Process some videos or images first.")
+    # Fetch and display data
+    conn = sqlite3.connect("detection_history.db")
+    sessions_df = pd.read_sql_query(query, conn)
+    conn.close()
 
-    with history_tab2:
-        st.subheader("Detection Details")
+    if not sessions_df.empty:
+        # Format class counts for better display
+        def format_class_counts(counts_str):
+            try:
+                if not counts_str:
+                    return "No data"
+                    
+                counts = json.loads(counts_str)
+                if isinstance(counts, dict):
+                    # Check if it's a structured format with 'in' and 'out'
+                    if 'in' in counts and 'out' in counts:
+                        in_counts = counts['in']
+                        out_counts = counts['out']
+                        
+                        result = ""
+                        
+                        # Format the in counts
+                        for cls, count in in_counts.items():
+                            if count > 0:  # Only show classes with counts
+                                result += f"- In {cls}: {count}\n"
+                        
+                        # Format the out counts
+                        for cls, count in out_counts.items():
+                            if count > 0:  # Only show classes with counts
+                                result += f"- Out {cls}: {count}\n"
+                        
+                        return result.strip() if result else "No detections"
+                    else:
+                        # Regular format (non-line based)
+                        return "\n".join([f"- {k}: {v}" for k, v in counts.items() if v > 0])
+                return str(counts_str)
+            except Exception as e:
+                print(f"Error formatting class counts: {e}")
+                return str(counts_str)
+        
+        # Apply the formatting to the class_counts column
+        sessions_df['class_counts_formatted'] = sessions_df['class_counts'].apply(format_class_counts)
+        
+        # Create a display dataframe with better column names
+        display_df = sessions_df.copy()
+        display_df.rename(columns={
+            'id': 'ID',
+            'timestamp': 'Waktu',
+            'file_name': 'Nama File',
+            'file_type': 'Jenis File',
+            'total_detections': 'Total Objek',
+            'class_counts_formatted': 'Detail Kelas',
+            'video_dimensions': 'Dimensi',
+            'settings_info': 'Info Tambahan'
+        }, inplace=True)
+        
+        # Select and reorder columns for display
+        columns_to_display = ['ID', 'Waktu', 'Nama File', 'Jenis File', 'Total Objek', 'Detail Kelas', 'Dimensi']
+        display_df = display_df[columns_to_display]
+        
+        st.dataframe(display_df, use_container_width=True)
 
-        # Add filter options
-        filter_col1, filter_col2, filter_col3 = st.columns([2, 2, 1])
-
-        with filter_col1:
-            file_type = st.radio("File Type", ["Video", "Image", "All"])
-
-        with filter_col2:
-            limit = st.slider("Number of records", 10, 5000, 100, 10)
-
-        with filter_col3:
-            st.write("&nbsp;")  # Add some spacing
-            st.write("&nbsp;")  # Add some spacing
-            show_all = st.checkbox("Show All Data", value=False)
-
-        # Build query based on filters
-        if file_type == "Video":
-            if show_all:
-                query = "SELECT * FROM video_detections ORDER BY timestamp DESC"
-            else:
-                query = f"SELECT * FROM video_detections ORDER BY timestamp DESC LIMIT {limit}"
-            table_name = "video_detections"
-        elif file_type == "Image":
-            if show_all:
-                query = "SELECT * FROM image_detections ORDER BY timestamp DESC"
-            else:
-                query = f"SELECT * FROM image_detections ORDER BY timestamp DESC LIMIT {limit}"
-            table_name = "image_detections"
-        else:
-            # For "All", we need to handle differently since tables have different columns
-            st.warning("Please select either Video or Image to view detection details.")
-            query = None
-            table_name = None
-
-        if query and table_name:
-            conn = sqlite3.connect("detection_history.db")
-            detections_df = pd.read_sql_query(query, conn)
-            conn.close()
-
-            if not detections_df.empty:
-                st.dataframe(detections_df, use_container_width=True)
-
-                # Allow downloading the detection details as CSV
-                csv = detections_df.to_csv(index=False)
-                st.download_button(
-                    label=f"Download {file_type} Detections",
-                    data=csv,
-                    file_name=f"{table_name}.csv",
-                    mime="text/csv",
-                )
-            else:
-                st.info(f"No {file_type.lower()} detections found.")
-
-        # Add option to clear history
-        with st.expander("Clear History"):
-            st.warning("This action cannot be undone!")
-            clear_col1, clear_col2, clear_col3 = st.columns(3)
-
-            with clear_col1:
-                if st.button("Clear Video Detections"):
-                    conn = sqlite3.connect("detection_history.db")
-                    c = conn.cursor()
-                    c.execute("DELETE FROM video_detections")
-                    conn.commit()
-                    conn.close()
-                    st.success("Video detection history cleared!")
-                    # Add a rerun to refresh the page
-                    time.sleep(1)  # Short delay for the success message to be visible
-                    st.rerun()
-
-            with clear_col2:
-                if st.button("Clear Image Detections"):
-                    conn = sqlite3.connect("detection_history.db")
-                    c = conn.cursor()
-                    c.execute("DELETE FROM image_detections")
-                    conn.commit()
-                    conn.close()
-                    st.success("Image detection history cleared!")
-                    # Add a rerun to refresh the page
-                    time.sleep(1)  # Short delay for the success message to be visible
-                    st.rerun()
-
-            with clear_col3:
-                if st.button(
-                    "Clear All History", type="primary", use_container_width=True
-                ):
-                    conn = sqlite3.connect("detection_history.db")
-                    c = conn.cursor()
-                    c.execute("DELETE FROM video_detections")
-                    c.execute("DELETE FROM image_detections")
-                    c.execute("DELETE FROM detection_sessions")
-                    conn.commit()
-                    conn.close()
-                    st.success("All detection history cleared!")
-                    # Add a rerun to refresh the page
-                    time.sleep(1)  # Short delay for the success message to be visible
-                    st.rerun()
+        # Allow downloading the session history as CSV
+        csv = sessions_df.to_csv(index=False)
+        st.download_button(
+            label="Unduh Riwayat Sesi",
+            data=csv,
+            file_name="detection_sessions.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info("Belum ada sesi pengolahan. Proses beberapa video atau gambar terlebih dahulu.")
