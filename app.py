@@ -1209,7 +1209,7 @@ with tab3:
     filter_col1, filter_col2, filter_col3 = st.columns(3)
 
     with filter_col1:
-        file_type_filter = st.radio("Jenis File", ["Video", "Gambar", "Semua"])
+        file_type_filter = st.radio("Jenis File", ["Semua", "Video", "Gambar"])
 
     with filter_col2:
         limit = st.slider("Jumlah Catatan", 10, 5000, 100, 10)
