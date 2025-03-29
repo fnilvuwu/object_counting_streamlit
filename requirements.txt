@@ -1,0 +1,8 @@
+streamlit==1.42.0
+opencv-python==4.11.0.86
+numpy==1.26.4
+ultralytics==8.0.227
+pandas==2.0.3
+Pillow==9.4.0
+shapely==2.0.7
+streamlit-image-coordinates==0.1.5
