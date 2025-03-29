@@ -48,9 +48,8 @@ allowed_classes = [1, 2, 3, 5, 7]
 st.title("Penghitung Objek YOLOv8")
 
 # Create tabs
-tab1, tab2, tab3 = st.tabs(
-    ["Pemrosesan Video", "Pemrosesan Gambar", "Riwayat Deteksi"]
-)
+tab1, tab2, tab3 = st.tabs(["Pemrosesan Video", "Pemrosesan Gambar", "Riwayat Deteksi"])
+
 
 # Create a function to initialize the SQLite database
 def init_database():
@@ -59,9 +58,11 @@ def init_database():
     c = conn.cursor()
 
     # Check if the table already exists
-    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='detection_sessions'")
+    c.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='detection_sessions'"
+    )
     table_exists = c.fetchone()
-    
+
     # Only create the table if it doesn't exist
     if not table_exists:
         # Create table for detection sessions with final counts
@@ -86,14 +87,18 @@ def init_database():
     conn.commit()
     conn.close()
 
+
 # Initialize database when the app starts
 init_database()
 
+
 # Function to save detection session to database
-def save_detection_session(file_name, file_type, total_detections, class_counts, video_dimensions=None):
+def save_detection_session(
+    file_name, file_type, total_detections, class_counts, video_dimensions=None
+):
     """
     Save detection session details to SQLite database
-    
+
     Args:
         file_name: Name of the processed file
         file_type: Type of file (video or image)
@@ -104,7 +109,7 @@ def save_detection_session(file_name, file_type, total_detections, class_counts,
     try:
         conn = sqlite3.connect("detection_history.db")
         c = conn.cursor()
-        
+
         # Translate file type to Indonesian
         if file_type.lower() == "video":
             file_type_id = "video"
@@ -112,19 +117,19 @@ def save_detection_session(file_name, file_type, total_detections, class_counts,
             file_type_id = "gambar"
         else:
             file_type_id = file_type.lower()
-            
+
         # Convert class counts to JSON string
         class_counts_json = json.dumps(class_counts)
-        
+
         # Convert video dimensions to string
         video_dimensions_str = str(video_dimensions) if video_dimensions else None
-        
+
         # Create settings info string
         settings_info = f"File: {file_name}, Type: {file_type_id}, Dimensions: {video_dimensions_str}"
-        
+
         # Get current timestamp
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
         # Insert data into database
         c.execute(
             """
@@ -142,12 +147,15 @@ def save_detection_session(file_name, file_type, total_detections, class_counts,
                 settings_info,
             ),
         )
-        
+
         conn.commit()
         conn.close()
-        print(f"Saved detection session to database: {file_name}, {total_detections} detections")
+        print(
+            f"Saved detection session to database: {file_name}, {total_detections} detections"
+        )
     except Exception as e:
         print(f"Error saving to database: {e}")
+
 
 # Function to get video dimensions
 def get_video_dimensions(video_path):
@@ -157,84 +165,90 @@ def get_video_dimensions(video_path):
     cap.release()
     return (width, height)
 
+
 # Function for total counting (non-line based)
 def process_total_counting(im0, tracks, track_memory=None, conf_thresh=0.5):
     """
     Process frames for total object counting without using crossing lines.
     This function prevents duplicate counting by tracking object IDs.
-    
+
     Args:
         im0: The input frame
         tracks: Detection tracks from YOLO
         track_memory: Dictionary to keep track of objects that have been counted
         conf_thresh: Confidence threshold for detections
-        
+
     Returns:
         im0: Processed frame with annotation
         track_memory: Updated memory dictionary
     """
     if track_memory is None:
         track_memory = {}
-    
+
     # Clone the image for drawing
     annotated_frame = im0.copy()
-    
+
     try:
-        if not tracks or len(tracks) == 0 or not hasattr(tracks[0], 'boxes') or tracks[0].boxes is None:
+        if (
+            not tracks
+            or len(tracks) == 0
+            or not hasattr(tracks[0], "boxes")
+            or tracks[0].boxes is None
+        ):
             return im0, track_memory
-            
+
         boxes = tracks[0].boxes
         if len(boxes) == 0:
             return im0, track_memory
-            
+
         # Process detections
         for i, box in enumerate(boxes):
             # Skip if no confidence or class info
-            if not hasattr(box, 'conf') or not hasattr(box, 'cls'):
+            if not hasattr(box, "conf") or not hasattr(box, "cls"):
                 continue
-                
+
             # Get detection info
             conf = float(box.conf[0])
             cls_id = int(box.cls[0])
-            
+
             # Skip if confidence is too low
             if conf < conf_thresh:
                 continue
-                
+
             # Get bounding box coordinates
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-            
+
             # Get track ID if available
             track_id = -1
-            if hasattr(box, 'id') and box.id is not None:
+            if hasattr(box, "id") and box.id is not None:
                 track_id = int(box.id[0])
             else:
                 # If no track ID, use box coordinates as a unique identifier
                 track_id = f"box_{cls_id}_{x1}_{y1}_{x2}_{y2}"
-            
+
             # Determine color based on whether object has been counted
             color = (0, 255, 0)  # Green for counted objects
             if track_id in track_memory:
                 color = (0, 255, 255)  # Yellow for already counted objects
-            
+
             # Draw bounding box
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-            
+
             # Add the object to memory if not already tracked
             if track_id not in track_memory:
                 track_memory[track_id] = {
                     "id": track_id,
                     "class": cls_id,
                     "counted": True,
-                    "first_seen": time.time()
+                    "first_seen": time.time(),
                 }
-                
+
             # Add label to the frame
-            if hasattr(tracks[0], 'names') and tracks[0].names is not None:
+            if hasattr(tracks[0], "names") and tracks[0].names is not None:
                 cls_name = tracks[0].names[cls_id]
             else:
                 cls_name = f"Class {cls_id}"
-                
+
             label = f"{cls_name} {conf:.2f}"
             cv2.putText(
                 annotated_frame,
@@ -243,28 +257,30 @@ def process_total_counting(im0, tracks, track_memory=None, conf_thresh=0.5):
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 color,
-                2
+                2,
             )
     except Exception as e:
         print(f"Error in process_total_counting: {e}")
-    
+
     return annotated_frame, track_memory
+
 
 # Function to scale line coordinates based on video dimensions
 def scale_line_coordinates(original_coords, original_dims, new_dims):
     if not original_coords or not original_dims or not new_dims:
         return original_coords
-    
+
     orig_width, orig_height = original_dims
     new_width, new_height = new_dims
-    
+
     scaled_coords = []
     for x, y in original_coords:
         scaled_x = int((x / orig_width) * new_width)
         scaled_y = int((y / orig_height) * new_height)
         scaled_coords.append((scaled_x, scaled_y))
-    
+
     return scaled_coords
+
 
 # Function to update sidebar based on active tab
 def update_sidebar_for_tab(tab_name):
@@ -279,7 +295,9 @@ def update_sidebar_for_tab(tab_name):
 
         # Line counter toggle
         use_line = st.sidebar.checkbox(
-            "Gunakan Garis Penghitung", value=st.session_state.use_line, key="use_line_toggle"
+            "Gunakan Garis Penghitung",
+            value=st.session_state.use_line,
+            key="use_line_toggle",
         )
 
         # Update session state for line toggle
@@ -289,49 +307,55 @@ def update_sidebar_for_tab(tab_name):
         # Reset line coordinates when video dimensions change
         if uploaded_file and st.session_state.video_dimensions:
             width, height = st.session_state.video_dimensions
-            
+
             # Check if we need to reset line coordinates
             if "previous_video_dims" not in st.session_state:
                 st.session_state.previous_video_dims = (width, height)
                 st.session_state.line_coordinates = [
                     (int(width * 0.1), int(height * 0.5)),
-                    (int(width * 0.9), int(height * 0.5))
+                    (int(width * 0.9), int(height * 0.5)),
                 ]
             elif st.session_state.previous_video_dims != (width, height):
                 # Video dimensions have changed, scale the line
                 old_width, old_height = st.session_state.previous_video_dims
-                
+
                 # Get current line positions as percentages
                 x1_percent = st.session_state.line_coordinates[0][0] / old_width
                 y1_percent = st.session_state.line_coordinates[0][1] / old_height
                 x2_percent = st.session_state.line_coordinates[1][0] / old_width
                 y2_percent = st.session_state.line_coordinates[1][1] / old_height
-                
+
                 # Apply percentages to new dimensions
                 st.session_state.line_coordinates = [
                     (int(x1_percent * width), int(y1_percent * height)),
-                    (int(x2_percent * width), int(y2_percent * height))
+                    (int(x2_percent * width), int(y2_percent * height)),
                 ]
-                
+
                 # Ensure coordinates are within bounds
                 st.session_state.line_coordinates = [
                     (min(max(0, x), width), min(max(0, y), height))
                     for x, y in st.session_state.line_coordinates
                 ]
-                
+
                 # Update previous dimensions
                 st.session_state.previous_video_dims = (width, height)
-        
+
         # Set default line coordinates for first run
         if "line_coordinates" not in st.session_state:
             default_width = 1280  # Default width if no video
             default_height = 720  # Default height if no video
             st.session_state.line_coordinates = [
                 (int(default_width * 0.1), int(default_height * 0.5)),
-                (int(default_width * 0.9), int(default_height * 0.5))
+                (int(default_width * 0.9), int(default_height * 0.5)),
             ]
 
-        return uploaded_file, 0.2, 0.3, None, use_line  # Fixed confidence at 0.2, IoU at 0.3
+        return (
+            uploaded_file,
+            0.2,
+            0.3,
+            None,
+            use_line,
+        )  # Fixed confidence at 0.2, IoU at 0.3
 
     else:  # Image tab
         # Image upload
@@ -345,55 +369,64 @@ def update_sidebar_for_tab(tab_name):
         show_labels = st.sidebar.checkbox("Tampilkan Label", value=True)
         show_conf = st.sidebar.checkbox("Tampilkan Skor Kepercayaan", value=True)
 
-        return uploaded_image, 0.25, 0.45, (show_labels, show_conf), None  # Fixed confidence at 0.25, IoU at 0.45
+        return (
+            uploaded_image,
+            0.25,
+            0.45,
+            (show_labels, show_conf),
+            None,
+        )  # Fixed confidence at 0.25, IoU at 0.45
+
 
 # Function to update line coordinates
 def update_line_coordinates():
     st.session_state.line_coordinates = [
         (st.session_state.x1, st.session_state.y1),
-        (st.session_state.x2, st.session_state.y2)
+        (st.session_state.x2, st.session_state.y2),
     ]
+
 
 # Helper function to safely get class name from model names dictionary
 def get_class_name(model_names, cls_id):
     """
     Safely get class name from model names dictionary
-    
+
     Args:
         model_names: Dictionary mapping class IDs to class names
         cls_id: Class ID to look up
-        
+
     Returns:
         Class name as string
     """
     if not isinstance(model_names, dict):
         return f"Class {cls_id}"
-        
+
     # Try to get class name directly
     cls_name = model_names.get(cls_id, None)
     if cls_name is not None:
         return cls_name
-        
+
     # If cls_id is a string that might be a number, try converting it
     if isinstance(cls_id, str) and cls_id.isdigit():
         cls_name = model_names.get(int(cls_id), None)
         if cls_name is not None:
             return cls_name
-            
+
     # If cls_id is a number, try as string
     if isinstance(cls_id, (int, float)):
         cls_name = model_names.get(str(cls_id), None)
         if cls_name is not None:
             return cls_name
-            
+
     # Fall back to original class ID
     return f"Class {cls_id}"
+
 
 # Function to clean up temporary files
 def cleanup_temp_files(file_paths):
     """
     Clean up temporary files
-    
+
     Args:
         file_paths: List of file paths to remove
     """
@@ -405,12 +438,14 @@ def cleanup_temp_files(file_paths):
         except Exception as e:
             print(f"Error removing temporary file {file_path}: {e}")
 
+
 # Register cleanup handler for when the app is closed or restarted
 def on_app_close():
     # Clean up any temporary files
     if "temp_files" in st.session_state and st.session_state.temp_files:
         cleanup_temp_files(st.session_state.temp_files)
         st.session_state.temp_files = []
+
 
 # Register the cleanup function to run when the app is closed
 atexit.register(on_app_close)
@@ -594,7 +629,9 @@ with tab1:
                     st.subheader("Pratinjau Frame")
 
                     # Show first frame without line
-                    st.image(pil_image, caption="Frame Pertama", use_container_width=True)
+                    st.image(
+                        pil_image, caption="Frame Pertama", use_container_width=True
+                    )
 
                 with col2:
                     st.subheader("Pengaturan Proses")
@@ -616,7 +653,6 @@ with tab1:
                 with st.spinner("Memuat Model YOLO..."):
                     model = YOLO("yolo11s.pt")  # Change this to your trained model path
 
-                
                 # Define allowed classes
                 allowed_classes = [
                     1,
@@ -652,7 +688,7 @@ with tab1:
                     "in_classes": {},
                     "out_classes": {},
                     "model_names": model.names,
-                    "use_line": True
+                    "use_line": True,
                 }
 
                 # Create a temporary directory for output - KEEP THIS PART
@@ -680,10 +716,10 @@ with tab1:
                 frame_idx = 0
                 total_detections = 0
                 video_name = os.path.basename(uploaded_file.name)
-                
+
                 # Create a dictionary to track unique objects by ID to prevent duplicate counting
                 unique_object_tracker = {}
-                
+
                 # Process the video in a single loop
                 while cap.isOpened():
                     success, im0 = cap.read()
@@ -705,25 +741,25 @@ with tab1:
                     if use_line:
                         # Process with line counter
                         im0 = counter.start_counting(im0, tracks)
-                        
+
                         # Update session state with current counter results after each frame
                         # Create a mapping from class names to class IDs for reverse lookup
                         class_name_to_id = {}
                         for cls_id, name in model.names.items():
                             class_name_to_id[name] = cls_id
-                            
+
                         # Convert string class names to numeric IDs for consistent storage
                         in_classes_by_id = {}
                         out_classes_by_id = {}
-                        
+
                         for cls_name, count in dict(counter.in_classes).items():
                             cls_id = class_name_to_id.get(cls_name, cls_name)
                             in_classes_by_id[cls_id] = count
-                            
+
                         for cls_name, count in dict(counter.out_classes).items():
                             cls_id = class_name_to_id.get(cls_name, cls_name)
                             out_classes_by_id[cls_id] = count
-                            
+
                         st.session_state.counter_results = {
                             "in_counts": counter.in_counts,
                             "out_counts": counter.out_counts,
@@ -732,10 +768,14 @@ with tab1:
                             "model_names": model.names,
                             "use_line": True,
                         }
-                        
+
                         # Debug print counter results
-                        if frame_idx % 30 == 0:  # Only print every 30 frames to avoid console spam
-                            print(f"Frame {frame_idx} - Counter results: in={counter.in_counts}, out={counter.out_counts}")
+                        if (
+                            frame_idx % 30 == 0
+                        ):  # Only print every 30 frames to avoid console spam
+                            print(
+                                f"Frame {frame_idx} - Counter results: in={counter.in_counts}, out={counter.out_counts}"
+                            )
                             print(f"In classes: {dict(counter.in_classes)}")
                             print(f"Out classes: {dict(counter.out_classes)}")
                     else:
@@ -750,24 +790,30 @@ with tab1:
                         # Only count unique objects based on their track ID
                         if tracks and len(tracks) > 0 and hasattr(tracks[0], "boxes"):
                             boxes = tracks[0].boxes
-                            if boxes is not None and len(boxes) > 0 and hasattr(boxes, "id"):
+                            if (
+                                boxes is not None
+                                and len(boxes) > 0
+                                and hasattr(boxes, "id")
+                            ):
                                 for i, box in enumerate(boxes):
                                     if not hasattr(box, "id") or box.id is None:
                                         continue
-                                        
+
                                     track_id = int(box.id[0])
                                     cls = int(box.cls[0])
                                     class_name = get_class_name(model.names, cls)
-                                    
+
                                     # Only count this object if we haven't seen this ID before
                                     if track_id not in unique_object_tracker:
                                         unique_object_tracker[track_id] = {
                                             "class": cls,
                                             "class_name": class_name,
-                                            "first_seen": frame_idx
+                                            "first_seen": frame_idx,
                                         }
                                         # Update the final counts that will be saved to DB
-                                        class_counts[class_name] = class_counts.get(class_name, 0) + 1
+                                        class_counts[class_name] = (
+                                            class_counts.get(class_name, 0) + 1
+                                        )
                                         total_detections += 1
 
                     # Write processed frame to output video
@@ -781,31 +827,59 @@ with tab1:
                 cap.release()
                 out.release()
 
+                # Load the processed video into memory immediately
+                try:
+                    with open(out_path, "rb") as f:
+                        st.session_state.processed_video_bytes = f.read()
+                    print(
+                        f"Successfully loaded video into memory ({len(st.session_state.processed_video_bytes)} bytes)"
+                    )
+                except Exception as e:
+                    print(f"Error reading video into memory: {e}")
+                    st.session_state.processed_video_bytes = None
+
+                # Store the path for backwards compatibility
+                st.session_state.processed_video = out_path
+
                 # Add video path to temp files for later cleanup
                 if "temp_files" not in st.session_state:
                     st.session_state.temp_files = []
                 st.session_state.temp_files.append(video_path)
 
                 # Prepare final counts for database
-                if use_line and hasattr(st.session_state, 'counter_results') and st.session_state.counter_results is not None:
+                if (
+                    use_line
+                    and hasattr(st.session_state, "counter_results")
+                    and st.session_state.counter_results is not None
+                ):
                     # For line-based counting, use the counter results
-                    in_classes = st.session_state.counter_results.get("in_classes", {}) or {}
-                    out_classes = st.session_state.counter_results.get("out_classes", {}) or {}
-                    
+                    in_classes = (
+                        st.session_state.counter_results.get("in_classes", {}) or {}
+                    )
+                    out_classes = (
+                        st.session_state.counter_results.get("out_classes", {}) or {}
+                    )
+
                     # Calculate total detections (sum of in and out counts)
-                    total_detections = st.session_state.counter_results.get("in_counts", 0) + st.session_state.counter_results.get("out_counts", 0)
-                    
+                    total_detections = st.session_state.counter_results.get(
+                        "in_counts", 0
+                    ) + st.session_state.counter_results.get("out_counts", 0)
+
                     # Debug print
-                    print(f"Final counter results: in={st.session_state.counter_results.get('in_counts', 0)}, out={st.session_state.counter_results.get('out_counts', 0)}")
+                    print(
+                        f"Final counter results: in={st.session_state.counter_results.get('in_counts', 0)}, out={st.session_state.counter_results.get('out_counts', 0)}"
+                    )
                     print(f"In classes: {in_classes}")
                     print(f"Out classes: {out_classes}")
                     print(f"Total detections: {total_detections}")
-                    
+
                     # Convert class IDs to class names in the in/out classes
                     named_in_classes = {}
                     named_out_classes = {}
-                    model_names = st.session_state.counter_results.get("model_names", {})
-                    
+                    model_names = st.session_state.counter_results.get(
+                        "model_names", {}
+                    )
+
                     for cls, count in in_classes.items():
                         # Get class name and ensure consistent format
                         if isinstance(cls, str) and cls.startswith("Class "):
@@ -814,9 +888,9 @@ with tab1:
                             cls_name = get_class_name(model_names, cls)
                             if cls_name.startswith("Class "):
                                 cls_name = cls_name[6:]  # Remove "Class " prefix
-                        
+
                         named_in_classes[cls_name] = count
-                        
+
                     for cls, count in out_classes.items():
                         # Get class name and ensure consistent format
                         if isinstance(cls, str) and cls.startswith("Class "):
@@ -825,15 +899,15 @@ with tab1:
                             cls_name = get_class_name(model_names, cls)
                             if cls_name.startswith("Class "):
                                 cls_name = cls_name[6:]  # Remove "Class " prefix
-                        
+
                         named_out_classes[cls_name] = count
-                    
+
                     # Structure the class counts as requested by the user
                     structured_class_counts = {
                         "in": named_in_classes,
-                        "out": named_out_classes
+                        "out": named_out_classes,
                     }
-                    
+
                     # Save to database only if we have detections
                     if total_detections > 0:
                         save_detection_session(
@@ -841,14 +915,14 @@ with tab1:
                             file_type="video",
                             total_detections=total_detections,
                             class_counts=structured_class_counts,
-                            video_dimensions=st.session_state.video_dimensions
+                            video_dimensions=st.session_state.video_dimensions,
                         )
                     else:
                         print("Warning: No detections to save to database")
                 else:
                     # For non-line based counting, use the unique object tracker
                     total_detections = sum(class_counts.values())
-                    
+
                     # Convert class IDs to class names
                     named_class_counts = {}
                     for cls, count in class_counts.items():
@@ -860,16 +934,16 @@ with tab1:
                             # Ensure consistent format by removing "Class " prefix
                             if cls_name.startswith("Class "):
                                 cls_name = cls_name[6:]
-                        
+
                         named_class_counts[cls_name] = count
-                    
+
                     # Save to database
                     save_detection_session(
                         file_name=uploaded_file.name,
                         file_type="video",
                         total_detections=total_detections,
                         class_counts=named_class_counts,
-                        video_dimensions=st.session_state.video_dimensions
+                        video_dimensions=st.session_state.video_dimensions,
                     )
 
                 # Clear progress indicators
@@ -935,7 +1009,9 @@ with tab1:
                             for cls, count in st.session_state.counter_results[
                                 "in_classes"
                             ].items():
-                                cls_name = get_class_name(st.session_state.counter_results["model_names"], cls)
+                                cls_name = get_class_name(
+                                    st.session_state.counter_results["model_names"], cls
+                                )
                                 st.write(f"- {cls_name}: {count}")
 
                         with col_out_detail:
@@ -943,7 +1019,9 @@ with tab1:
                             for cls, count in st.session_state.counter_results[
                                 "out_classes"
                             ].items():
-                                cls_name = get_class_name(st.session_state.counter_results["model_names"], cls)
+                                cls_name = get_class_name(
+                                    st.session_state.counter_results["model_names"], cls
+                                )
                                 st.write(f"- {cls_name}: {count}")
                 else:
                     # Display total counting metrics
@@ -965,49 +1043,36 @@ with tab1:
                 # Display the processed video - FIXED VERSION FOR STREAMLIT CLOUD
                 st.subheader("Video Hasil Proses")
 
-                # First try to use the bytes if available
-                if hasattr(st.session_state, "processed_video_bytes") and st.session_state.processed_video_bytes:
+                if (
+                    hasattr(st.session_state, "processed_video_bytes")
+                    and st.session_state.processed_video_bytes
+                ):
                     try:
+                        # Display directly from memory bytes
                         st.video(st.session_state.processed_video_bytes)
-                    except Exception as e1:
-                        # Fall back to file path if bytes don't work
-                        try:
-                            if os.path.exists(st.session_state.processed_video):
-                                # Try reading file again as a fallback
-                                with open(st.session_state.processed_video, "rb") as video_file:
-                                    video_bytes = video_file.read()
-                                st.video(video_bytes)
-                            else:
-                                st.warning("File video tidak ditemukan. Coba proses ulang video.")
-                        except Exception as e2:
-                            st.error("Tidak dapat menampilkan video. Video tersedia untuk diunduh.")
-                            st.info(f"Error: {str(e1)}, lalu {str(e2)}")
-                else:
-                    st.warning("Video diproses tetapi tidak tersedia untuk pratinjau. Silakan gunakan tombol unduh.")
-
-                # Offer download button - Improved for reliability
-                try:
-                    if hasattr(st.session_state, "processed_video_bytes") and st.session_state.processed_video_bytes:
-                        # Use the already loaded bytes for download
-                        st.download_button(
-                            label="Unduh Video Hasil Proses",
-                            data=st.session_state.processed_video_bytes,
-                            file_name="processed_video.mp4",
-                            mime="video/mp4",
+                    except Exception as e:
+                        st.error(f"Gagal menampilkan video: {str(e)}")
+                        st.info(
+                            "Coba gunakan tombol unduh untuk menyimpan dan melihat video."
                         )
-                    elif os.path.exists(st.session_state.processed_video):
-                        # Read the file if bytes aren't available
-                        with open(st.session_state.processed_video, "rb") as file:
-                            st.download_button(
-                                label="Unduh Video Hasil Proses",
-                                data=file,
-                                file_name="processed_video.mp4",
-                                mime="video/mp4",
-                            )
-                    else:
-                        st.warning("File video tidak tersedia untuk diunduh.")
-                except Exception as e:
-                    st.error(f"Gagal menyiapkan tombol unduhan: {str(e)}")
+                else:
+                    st.warning(
+                        "Video tidak tersedia untuk pratinjau. Coba proses ulang video."
+                    )
+
+                # Offer download button - Directly from memory
+                if (
+                    hasattr(st.session_state, "processed_video_bytes")
+                    and st.session_state.processed_video_bytes
+                ):
+                    st.download_button(
+                        label="Unduh Video Hasil Proses",
+                        data=st.session_state.processed_video_bytes,
+                        file_name="processed_video.mp4",
+                        mime="video/mp4",
+                    )
+                else:
+                    st.warning("Video tidak tersedia untuk diunduh.")
 
     else:
         # Display instruction when no file is uploaded
@@ -1075,29 +1140,35 @@ with tab2:
                 # Initialize detection counts
                 total_detections = 0
                 class_counts = {}
-                
+
                 # Track unique objects by ID to prevent duplicate counting
                 unique_objects = set()
-                
+
                 # Process and count objects by class
-                if len(results) > 0 and hasattr(results[0], 'boxes') and results[0].boxes is not None:
+                if (
+                    len(results) > 0
+                    and hasattr(results[0], "boxes")
+                    and results[0].boxes is not None
+                ):
                     boxes = results[0].boxes
-                    
+
                     # Count objects by class (only counting unique objects)
                     for box in boxes:
                         cls = int(box.cls[0])
                         class_name = get_class_name(model.names, cls)
-                        
+
                         # For images, we don't have tracking IDs, so use box coordinates as a unique identifier
                         # This is a simplified approach since we're processing a single image
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         box_id = f"{cls}_{x1}_{y1}_{x2}_{y2}"
-                        
+
                         if box_id not in unique_objects:
                             unique_objects.add(box_id)
-                            class_counts[class_name] = class_counts.get(class_name, 0) + 1
+                            class_counts[class_name] = (
+                                class_counts.get(class_name, 0) + 1
+                            )
                             total_detections += 1
-                
+
                 # Save detection results to database
                 if total_detections > 0:
                     # Convert class IDs to class names for database
@@ -1110,19 +1181,19 @@ with tab2:
                             cls_name = get_class_name(model.names, cls)
                             if cls_name.startswith("Class "):
                                 cls_name = cls_name[6:]
-                        
+
                         named_class_counts[cls_name] = count
-                    
+
                     # Get image dimensions
                     img_height, img_width = img_cv.shape[:2]
-                    
+
                     # Save to database
                     save_detection_session(
                         file_name=uploaded_image.name,
                         file_type="image",
                         total_detections=total_detections,
                         class_counts=named_class_counts,
-                        video_dimensions=(img_width, img_height)
+                        video_dimensions=(img_width, img_height),
                     )
 
                 # Create a temporary directory for output
@@ -1183,9 +1254,7 @@ with tab2:
                         )
 
                 # Save the processed image
-                cv2.imwrite(
-                    result_path, cv2.cvtColor(img_cv, cv2.COLOR_RGB2BGR)
-                )
+                cv2.imwrite(result_path, cv2.cvtColor(img_cv, cv2.COLOR_RGB2BGR))
 
                 # Display results
                 st.subheader("Hasil Deteksi")
@@ -1270,18 +1339,18 @@ with tab3:
     # Build query based on filters
     base_query = "SELECT * FROM detection_sessions"
     where_clause = []
-    
+
     if file_type_filter != "Semua":
         # Map UI selection to database value
         if file_type_filter == "Video":
             where_clause.append("file_type = 'video'")
         elif file_type_filter == "Gambar":
             where_clause.append("file_type = 'gambar'")
-    
+
     query = base_query
     if where_clause:
         query += " WHERE " + " AND ".join(where_clause)
-    
+
     query += " ORDER BY timestamp DESC"
     if not show_all:
         query += f" LIMIT {limit}"
@@ -1297,55 +1366,70 @@ with tab3:
             try:
                 if not counts_str:
                     return "No data"
-                    
+
                 counts = json.loads(counts_str)
                 if isinstance(counts, dict):
                     # Check if it's a structured format with 'in' and 'out'
-                    if 'in' in counts and 'out' in counts:
-                        in_counts = counts['in']
-                        out_counts = counts['out']
-                        
+                    if "in" in counts and "out" in counts:
+                        in_counts = counts["in"]
+                        out_counts = counts["out"]
+
                         result = ""
-                        
+
                         # Format the in counts
                         for cls, count in in_counts.items():
                             if count > 0:  # Only show classes with counts
                                 result += f"- In {cls}: {count}\n"
-                        
+
                         # Format the out counts
                         for cls, count in out_counts.items():
                             if count > 0:  # Only show classes with counts
                                 result += f"- Out {cls}: {count}\n"
-                        
+
                         return result.strip() if result else "No detections"
                     else:
                         # Regular format (non-line based)
-                        return "\n".join([f"- {k}: {v}" for k, v in counts.items() if v > 0])
+                        return "\n".join(
+                            [f"- {k}: {v}" for k, v in counts.items() if v > 0]
+                        )
                 return str(counts_str)
             except Exception as e:
                 print(f"Error formatting class counts: {e}")
                 return str(counts_str)
-        
+
         # Apply the formatting to the class_counts column
-        sessions_df['class_counts_formatted'] = sessions_df['class_counts'].apply(format_class_counts)
-        
+        sessions_df["class_counts_formatted"] = sessions_df["class_counts"].apply(
+            format_class_counts
+        )
+
         # Create a display dataframe with better column names
         display_df = sessions_df.copy()
-        display_df.rename(columns={
-            'id': 'ID',
-            'timestamp': 'Waktu',
-            'file_name': 'Nama File',
-            'file_type': 'Jenis File',
-            'total_detections': 'Total Objek',
-            'class_counts_formatted': 'Detail Kelas',
-            'video_dimensions': 'Dimensi',
-            'settings_info': 'Info Tambahan'
-        }, inplace=True)
-        
+        display_df.rename(
+            columns={
+                "id": "ID",
+                "timestamp": "Waktu",
+                "file_name": "Nama File",
+                "file_type": "Jenis File",
+                "total_detections": "Total Objek",
+                "class_counts_formatted": "Detail Kelas",
+                "video_dimensions": "Dimensi",
+                "settings_info": "Info Tambahan",
+            },
+            inplace=True,
+        )
+
         # Select and reorder columns for display
-        columns_to_display = ['ID', 'Waktu', 'Nama File', 'Jenis File', 'Total Objek', 'Detail Kelas', 'Dimensi']
+        columns_to_display = [
+            "ID",
+            "Waktu",
+            "Nama File",
+            "Jenis File",
+            "Total Objek",
+            "Detail Kelas",
+            "Dimensi",
+        ]
         display_df = display_df[columns_to_display]
-        
+
         st.dataframe(display_df, use_container_width=True)
 
         # Allow downloading the session history as CSV
@@ -1357,4 +1441,6 @@ with tab3:
             mime="text/csv",
         )
     else:
-        st.info("Belum ada sesi pengolahan. Proses beberapa video atau gambar terlebih dahulu.")
+        st.info(
+            "Belum ada sesi pengolahan. Proses beberapa video atau gambar terlebih dahulu."
+        )
