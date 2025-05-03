@@ -214,7 +214,6 @@ class CustomCounter:
 
         # Annotator Init and region drawing
         self.annotator = Annotator(self.im0, self.tf, self.names)
-        self.annotator.draw_region(reg_pts=self.reg_pts, color=self.region_color, thickness=self.region_thickness)
 
         # Extract tracks
         for box, track_id, cls in zip(boxes, track_ids, clss):
@@ -236,12 +235,6 @@ class CustomCounter:
             track_line.append((float((box[0] + box[2]) / 2), float((box[1] + box[3]) / 2)))
             if len(track_line) > 30:
                 track_line.pop(0)
-
-            # Draw track trails
-            if self.draw_tracks:
-                self.annotator.draw_centroid_and_tracks(
-                    track_line, color=self.track_color, track_thickness=self.track_thickness
-                )
 
             # Count objects based on direction
             # Use more points for reliable direction detection

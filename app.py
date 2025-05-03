@@ -48,7 +48,7 @@ allowed_classes = [1, 2, 3, 5, 7]
 st.title("Penghitung Objek YOLOv8")
 
 # Create tabs
-tab1, tab2, tab3 = st.tabs(["Pemrosesan Video", "Pemrosesan Gambar", "Riwayat Deteksi"])
+tab1, tab2, tab3 = st.tabs(["Pemrosesan Gambar", "Pemrosesan Video", "Riwayat Deteksi"])
 
 
 # Create a function to initialize the SQLite database
@@ -450,8 +450,221 @@ def on_app_close():
 # Register the cleanup function to run when the app is closed
 atexit.register(on_app_close)
 
-# Video Processing Tab
+# Image Processing Tab
 with tab1:
+    st.session_state.current_tab = "Image"
+
+    # Get image sidebar inputs
+    uploaded_image, img_conf_thresh, _, vis_options, _ = update_sidebar_for_tab("Image")
+
+    if vis_options:
+        show_labels, show_conf = vis_options
+
+    st.header("Deteksi Objek Gambar")
+
+    if uploaded_image:
+        # Save uploaded image temporarily
+        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+        tfile.write(uploaded_image.read())
+        image_path = tfile.name
+        tfile.close()
+
+        # Display original image
+        img = Image.open(image_path)
+        st.subheader("Gambar Asli")
+        st.image(img, caption="Gambar Unggahan", use_container_width=True)
+
+        # Process image button
+        process_image_button = st.button(
+            "Deteksi Objek", type="primary", use_container_width=True, key="detect_btn"
+        )
+
+        if process_image_button:
+            # Load YOLO model
+            with st.spinner("Memuat Model YOLO dan mengolah gambar..."):
+                model = YOLO("yolo11s.pt")  # Change this to your trained model path
+
+                # Run detection
+                results = model(
+                    image_path,
+                    conf=img_conf_thresh,
+                    iou=0.45,
+                    verbose=False,
+                    classes=[1, 2, 3, 5, 7],
+                )
+
+                # Convert cv2 image format for visualization
+                img_cv = cv2.imread(image_path)
+                img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+
+                # Initialize detection counts
+                total_detections = 0
+                class_counts = {}
+
+                # Track unique objects by ID to prevent duplicate counting
+                unique_objects = set()
+
+                # Process and count objects by class
+                if (
+                    len(results) > 0
+                    and hasattr(results[0], "boxes")
+                    and results[0].boxes is not None
+                ):
+                    boxes = results[0].boxes
+
+                    # Count objects by class (only counting unique objects)
+                    for box in boxes:
+                        cls = int(box.cls[0])
+                        class_name = get_class_name(model.names, cls)
+
+                        # For images, we don't have tracking IDs, so use box coordinates as a unique identifier
+                        # This is a simplified approach since we're processing a single image
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        box_id = f"{cls}_{x1}_{y1}_{x2}_{y2}"
+
+                        if box_id not in unique_objects:
+                            unique_objects.add(box_id)
+                            class_counts[class_name] = (
+                                class_counts.get(class_name, 0) + 1
+                            )
+                            total_detections += 1
+
+                # Save detection results to database
+                if total_detections > 0:
+                    # Convert class IDs to class names for database
+                    named_class_counts = {}
+                    for cls, count in class_counts.items():
+                        # Ensure consistent format by removing "Class " prefix
+                        if isinstance(cls, str) and cls.startswith("Class "):
+                            cls_name = cls[6:]
+                        else:
+                            cls_name = get_class_name(model.names, cls)
+                            if cls_name.startswith("Class "):
+                                cls_name = cls_name[6:]
+
+                        named_class_counts[cls_name] = count
+
+                    # Get image dimensions
+                    img_height, img_width = img_cv.shape[:2]
+
+                    # Save to database
+                    save_detection_session(
+                        file_name=uploaded_image.name,
+                        file_type="image",
+                        total_detections=total_detections,
+                        class_counts=named_class_counts,
+                        video_dimensions=(img_width, img_height),
+                    )
+
+                # Create a temporary directory for output
+                temp_output_dir = tempfile.mkdtemp()
+                result_path = os.path.join(temp_output_dir, "detected_image.jpg")
+
+                # Track temporary files for cleanup
+                if "temp_files" not in st.session_state:
+                    st.session_state.temp_files = []
+                st.session_state.temp_files.append(image_path)
+                st.session_state.temp_files.append(temp_output_dir)
+
+                # Draw bounding boxes on the image
+                for box in results[0].boxes:
+                    # Get box coordinates
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+                    # Get class and confidence
+                    cls_id = int(box.cls[0])
+                    conf = float(box.conf[0])
+
+                    # Get class name
+                    cls_name = get_class_name(model.names, cls_id)
+
+                    # Draw bounding box
+                    color = (255, 0, 0)  # Red for all boxes
+                    cv2.rectangle(img_cv, (x1, y1), (x2, y2), color, 2)
+
+                    # Add label if enabled
+                    if show_labels:
+                        label = f"{cls_name}"
+                        if show_conf:
+                            label += f" {conf:.2f}"
+
+                        # Calculate text size
+                        text_size = cv2.getTextSize(
+                            label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2
+                        )[0]
+
+                        # Fill background for text
+                        cv2.rectangle(
+                            img_cv,
+                            (x1, y1 - text_size[1] - 5),
+                            (x1 + text_size[0], y1),
+                            color,
+                            -1,
+                        )
+
+                        # Add text
+                        cv2.putText(
+                            img_cv,
+                            label,
+                            (x1, y1 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (255, 255, 255),
+                            2,
+                        )
+
+                # Save the processed image
+                cv2.imwrite(result_path, cv2.cvtColor(img_cv, cv2.COLOR_RGB2BGR))
+
+                # Display results
+                st.subheader("Hasil Deteksi")
+
+                # Show object counts
+                st.write("**Objek Terdeteksi:**")
+
+                # Create a nice grid of metrics
+                if class_counts:
+                    cols = st.columns(min(3, len(class_counts)))
+                    for i, (cls_name, count) in enumerate(class_counts.items()):
+                        cols[i % len(cols)].metric(f"{cls_name}", f"{count}")
+                else:
+                    st.warning(
+                        "Tidak ada objek terdeteksi. Coba atur ambang kepercayaan."
+                    )
+
+                # Show the processed image
+                st.image(
+                    img_cv,
+                    caption="Hasil Deteksi",
+                    use_container_width=True,
+                )
+
+                # Offer download button
+                with open(result_path, "rb") as file:
+                    st.download_button(
+                        label="Unduh Gambar Hasil Deteksi",
+                        data=file,
+                        file_name="detected_image.jpg",
+                        mime="image/jpeg",
+                        key="download_img",
+                    )
+    else:
+        # Display instruction when no file is uploaded
+        st.info("Silakan unggah file gambar untuk memulai deteksi.")
+        st.markdown(
+            """
+        ### Cara menggunakan deteksi gambar:
+        1. Unggah file gambar menggunakan sidebar
+        2. Atur ambang kepercayaan dan IoU untuk mengontrol sensitivitas deteksi
+        3. Konfigurasikan opsi visualisasi (label, skor kepercayaan)
+        4. Klik 'Deteksi Objek' untuk memulai deteksi
+        5. Lihat hasil dan unduh gambar hasil deteksi
+        """
+        )
+
+
+# Video Processing Tab
+with tab2:
     st.session_state.current_tab = "Video"
 
     # Get video sidebar inputs
@@ -1087,218 +1300,6 @@ with tab1:
         3. Jika menggunakan garis, atur posisi garis penghitung
         4. Klik 'Proses Video' untuk memulai penghitungan objek
         5. Lihat hasil dan unduh video hasil proses
-        """
-        )
-
-# Image Processing Tab
-with tab2:
-    st.session_state.current_tab = "Image"
-
-    # Get image sidebar inputs
-    uploaded_image, img_conf_thresh, _, vis_options, _ = update_sidebar_for_tab("Image")
-
-    if vis_options:
-        show_labels, show_conf = vis_options
-
-    st.header("Deteksi Objek Gambar")
-
-    if uploaded_image:
-        # Save uploaded image temporarily
-        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-        tfile.write(uploaded_image.read())
-        image_path = tfile.name
-        tfile.close()
-
-        # Display original image
-        img = Image.open(image_path)
-        st.subheader("Gambar Asli")
-        st.image(img, caption="Gambar Unggahan", use_container_width=True)
-
-        # Process image button
-        process_image_button = st.button(
-            "Deteksi Objek", type="primary", use_container_width=True, key="detect_btn"
-        )
-
-        if process_image_button:
-            # Load YOLO model
-            with st.spinner("Memuat Model YOLO dan mengolah gambar..."):
-                model = YOLO("yolo11s.pt")  # Change this to your trained model path
-
-                # Run detection
-                results = model(
-                    image_path,
-                    conf=img_conf_thresh,
-                    iou=0.45,
-                    verbose=False,
-                    classes=[1, 2, 3, 5, 7],
-                )
-
-                # Convert cv2 image format for visualization
-                img_cv = cv2.imread(image_path)
-                img_cv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
-
-                # Initialize detection counts
-                total_detections = 0
-                class_counts = {}
-
-                # Track unique objects by ID to prevent duplicate counting
-                unique_objects = set()
-
-                # Process and count objects by class
-                if (
-                    len(results) > 0
-                    and hasattr(results[0], "boxes")
-                    and results[0].boxes is not None
-                ):
-                    boxes = results[0].boxes
-
-                    # Count objects by class (only counting unique objects)
-                    for box in boxes:
-                        cls = int(box.cls[0])
-                        class_name = get_class_name(model.names, cls)
-
-                        # For images, we don't have tracking IDs, so use box coordinates as a unique identifier
-                        # This is a simplified approach since we're processing a single image
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        box_id = f"{cls}_{x1}_{y1}_{x2}_{y2}"
-
-                        if box_id not in unique_objects:
-                            unique_objects.add(box_id)
-                            class_counts[class_name] = (
-                                class_counts.get(class_name, 0) + 1
-                            )
-                            total_detections += 1
-
-                # Save detection results to database
-                if total_detections > 0:
-                    # Convert class IDs to class names for database
-                    named_class_counts = {}
-                    for cls, count in class_counts.items():
-                        # Ensure consistent format by removing "Class " prefix
-                        if isinstance(cls, str) and cls.startswith("Class "):
-                            cls_name = cls[6:]
-                        else:
-                            cls_name = get_class_name(model.names, cls)
-                            if cls_name.startswith("Class "):
-                                cls_name = cls_name[6:]
-
-                        named_class_counts[cls_name] = count
-
-                    # Get image dimensions
-                    img_height, img_width = img_cv.shape[:2]
-
-                    # Save to database
-                    save_detection_session(
-                        file_name=uploaded_image.name,
-                        file_type="image",
-                        total_detections=total_detections,
-                        class_counts=named_class_counts,
-                        video_dimensions=(img_width, img_height),
-                    )
-
-                # Create a temporary directory for output
-                temp_output_dir = tempfile.mkdtemp()
-                result_path = os.path.join(temp_output_dir, "detected_image.jpg")
-
-                # Track temporary files for cleanup
-                if "temp_files" not in st.session_state:
-                    st.session_state.temp_files = []
-                st.session_state.temp_files.append(image_path)
-                st.session_state.temp_files.append(temp_output_dir)
-
-                # Draw bounding boxes on the image
-                for box in results[0].boxes:
-                    # Get box coordinates
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-
-                    # Get class and confidence
-                    cls_id = int(box.cls[0])
-                    conf = float(box.conf[0])
-
-                    # Get class name
-                    cls_name = get_class_name(model.names, cls_id)
-
-                    # Draw bounding box
-                    color = (255, 0, 0)  # Red for all boxes
-                    cv2.rectangle(img_cv, (x1, y1), (x2, y2), color, 2)
-
-                    # Add label if enabled
-                    if show_labels:
-                        label = f"{cls_name}"
-                        if show_conf:
-                            label += f" {conf:.2f}"
-
-                        # Calculate text size
-                        text_size = cv2.getTextSize(
-                            label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2
-                        )[0]
-
-                        # Fill background for text
-                        cv2.rectangle(
-                            img_cv,
-                            (x1, y1 - text_size[1] - 5),
-                            (x1 + text_size[0], y1),
-                            color,
-                            -1,
-                        )
-
-                        # Add text
-                        cv2.putText(
-                            img_cv,
-                            label,
-                            (x1, y1 - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (255, 255, 255),
-                            2,
-                        )
-
-                # Save the processed image
-                cv2.imwrite(result_path, cv2.cvtColor(img_cv, cv2.COLOR_RGB2BGR))
-
-                # Display results
-                st.subheader("Hasil Deteksi")
-
-                # Show object counts
-                st.write("**Objek Terdeteksi:**")
-
-                # Create a nice grid of metrics
-                if class_counts:
-                    cols = st.columns(min(3, len(class_counts)))
-                    for i, (cls_name, count) in enumerate(class_counts.items()):
-                        cols[i % len(cols)].metric(f"{cls_name}", f"{count}")
-                else:
-                    st.warning(
-                        "Tidak ada objek terdeteksi. Coba atur ambang kepercayaan."
-                    )
-
-                # Show the processed image
-                st.image(
-                    img_cv,
-                    caption="Hasil Deteksi",
-                    use_container_width=True,
-                )
-
-                # Offer download button
-                with open(result_path, "rb") as file:
-                    st.download_button(
-                        label="Unduh Gambar Hasil Deteksi",
-                        data=file,
-                        file_name="detected_image.jpg",
-                        mime="image/jpeg",
-                        key="download_img",
-                    )
-    else:
-        # Display instruction when no file is uploaded
-        st.info("Silakan unggah file gambar untuk memulai deteksi.")
-        st.markdown(
-            """
-        ### Cara menggunakan deteksi gambar:
-        1. Unggah file gambar menggunakan sidebar
-        2. Atur ambang kepercayaan dan IoU untuk mengontrol sensitivitas deteksi
-        3. Konfigurasikan opsi visualisasi (label, skor kepercayaan)
-        4. Klik 'Deteksi Objek' untuk memulai deteksi
-        5. Lihat hasil dan unduh gambar hasil deteksi
         """
         )
 
